@@ -13,6 +13,12 @@ struct Cli {
 enum Command {
     Capture,
     CapturePopup,
+    Review,
+    ReviewPopup,
+    ConfirmReview {
+        #[arg(long)]
+        id: String,
+    },
 }
 
 fn main() {
@@ -27,6 +33,9 @@ fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Capture => herdr_comments::capture_action(),
         Command::CapturePopup => herdr_comments::capture_popup(),
+        Command::Review => herdr_comments::review_action(),
+        Command::ReviewPopup => herdr_comments::review_popup(),
+        Command::ConfirmReview { id } => herdr_comments::confirm_review(&id),
     }
 }
 
