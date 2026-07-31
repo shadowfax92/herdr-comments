@@ -24,7 +24,7 @@ impl HerdrClient for RecordingHerdr {
         Ok(())
     }
 
-    fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
+    fn paste_text(&self, pane_id: &str, text: &str) -> Result<()> {
         if *self.fail_send.lock().unwrap() {
             bail!("injected send failure");
         }

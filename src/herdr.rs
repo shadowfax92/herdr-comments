@@ -15,7 +15,7 @@ pub enum FailureKind {
 pub trait HerdrClient {
     fn open_capture(&self, draft_id: &str) -> Result<()>;
     fn open_review(&self, review_id: &str) -> Result<()>;
-    fn send_text(&self, pane_id: &str, text: &str) -> Result<()>;
+    fn paste_text(&self, pane_id: &str, text: &str) -> Result<()>;
     fn notify(&self, title: &str, body: &str) -> Result<()>;
 }
 
@@ -66,8 +66,8 @@ impl HerdrClient for CliHerdr {
         Ok(())
     }
 
-    fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
-        self.run(&send_text_args(pane_id, text), "insert comments")?;
+    fn paste_text(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.run(&paste_args(pane_id, text), "insert comments")?;
         Ok(())
     }
 
@@ -112,13 +112,8 @@ fn popup_args(entrypoint: &str, width: &str, height: &str, key: &str, id: &str) 
     ]
 }
 
-pub fn send_text_args(pane_id: &str, text: &str) -> Vec<String> {
-    vec![
-        "pane".into(),
-        "send-text".into(),
-        pane_id.into(),
-        text.into(),
-    ]
+pub fn paste_args(pane_id: &str, text: &str) -> Vec<String> {
+    vec!["pane".into(), "paste".into(), pane_id.into(), text.into()]
 }
 
 fn notification_args(title: &str, body: &str) -> Vec<String> {
