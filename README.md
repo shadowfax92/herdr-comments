@@ -1,42 +1,35 @@
-# Herdr Comments
+<div align="center">
 
-Comment on copied terminal text, insert one comment immediately, or collect several comments for a Neovim review.
+# 💬 Herdr Comments
 
-## Workflow
+**Annotate terminal output and send the context back without leaving Herdr.**
 
-1. Press `Alt-w`, then `v`, move to select, and press `y` to copy.
-2. Press `Alt-c` and write a one-line comment.
-3. Choose what happens next:
+*Insert one thought now, or collect a review round and polish it in Neovim.*
 
-| Key | Result |
-| --- | --- |
-| `Enter` | Insert this comment into the originating pane |
-| `Option-Enter` or `Ctrl-Enter` | Collect it for that pane |
-| `Ctrl-p` | Insert the collected comments plus this one |
-| `Esc` | Discard this capture |
+[![Herdr 0.7.5+](https://img.shields.io/badge/Herdr-0.7.5%2B-6c71c4)](https://herdr.dev)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Press `Alt-Shift-c` to review the collected comments in Neovim. Use `:wq` to insert the edited document or `:q` to cancel and preserve the collection.
+</div>
 
-Text is inserted without `Enter`, so the destination program does not submit it. Output is quote-first Markdown:
+Herdr Comments turns copied terminal text into quote-first Markdown for your next agent prompt. Capture a single comment, accumulate several comments per pane, or open the whole collection in Neovim for a final editing pass.
 
-```markdown
-> selected terminal text
-
-your comment
-```
-
-Collections are isolated by Herdr session and originating pane. A review removes only the comments in its snapshot, so comments collected while Neovim is open remain available.
+- **One-shot comments** — paste one annotation into the originating pane immediately.
+- **Draft-first review rounds** — collect comments without touching the pane, then review them together.
+- **Exact source context** — every note stays attached to the terminal text that prompted it.
+- **Safe insertion** — multiline Markdown is pasted without pressing Enter, so nothing is submitted for you.
+- **Per-pane isolation** — collections are scoped to the Herdr session and source pane.
+- **Local private state** — drafts and reviews stay in Herdr's plugin state directory with private permissions.
 
 ## Install
 
-Herdr 0.7.5 or newer, Neovim, and the Rust toolchain are required on macOS.
+Requires macOS, [Herdr](https://herdr.dev) 0.7.5 or newer, a Rust toolchain, and Neovim for collection review.
 
 ```sh
-cd /Users/shadowfax/code/side-projects/herdr-custom-plugins/my/herdr-comments
-herdr plugin link . --enabled
+herdr plugin install shadowfax92/herdr-comments
 ```
 
-Add the bindings to `~/.config/herdr/config.toml`:
+Add the actions to `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
@@ -52,23 +45,72 @@ command = "shadowfax.comments.review"
 description = "Review collected comments"
 ```
 
-Then reload Herdr:
+Reload the running server:
 
 ```sh
 herdr server reload-config
 ```
 
-The linked plugin uses this checkout. Rebuild after updating it with `cargo build --release --locked`.
+## Workflow
 
-## State
+1. Enter Herdr Copy mode, select text with `v`, and copy it with `y`.
+2. Press `Alt-c` and write a one-line comment.
+3. Insert it, collect it, or paste the whole collection.
 
-Herdr Comments stores private files under its Herdr state directory. Drafts and interrupted review sessions expire after 24 hours; collected comments remain until inserted. Set `HERDR_COMMENTS_NVIM` to use a Neovim executable other than `nvim`.
+| Key | Result |
+| --- | --- |
+| `Enter` | Paste this comment into the originating pane |
+| `Option-Enter` or `Ctrl-Enter` | Collect it for this pane without changing the pane |
+| `Ctrl-p` | Paste the collected comments followed by this comment |
+| `Esc` | Discard this capture |
 
-## Develop
+Press `Alt-Shift-c` when you are ready to review a collection. Neovim opens the complete Markdown document:
+
+- `:wq` confirms the edited document and pastes it into the originating pane.
+- `:q` cancels the review and preserves the collection.
+
+Herdr Comments never sends Enter. Review the resulting prompt and submit it yourself.
+
+## Output
+
+Each capture is rendered as quote-first Markdown:
+
+```markdown
+> selected terminal text
+
+your comment
+```
+
+Multiple captures are separated by blank lines and retain their capture order. A review removes only the comments in its original snapshot, so new comments collected while Neovim is open remain available for the next round.
+
+## State and recovery
+
+Herdr provides the plugin's state directory. Herdr Comments stores drafts, collections, and review snapshots there using private directories and files.
+
+- Interrupted drafts and review sessions expire after 24 hours.
+- Collected comments remain until they are successfully inserted.
+- Failed pane insertion preserves the draft or review for another attempt.
+- `HERDR_COMMENTS_NVIM` can select a Neovim executable other than `nvim`.
+
+## Local development
+
+```sh
+git clone https://github.com/shadowfax92/herdr-comments.git
+cd herdr-comments
+herdr plugin link .
+```
+
+Run the complete local gate:
 
 ```sh
 cargo fmt --check
-cargo test
 cargo clippy --all-targets -- -D warnings
+cargo test --locked
 cargo build --release --locked
 ```
+
+A linked plugin runs from this checkout. Rebuild the release binary after changing the code.
+
+## License
+
+[MIT](LICENSE)
