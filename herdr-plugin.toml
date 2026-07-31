@@ -1,0 +1,40 @@
+id = "shadowfax.comments"
+name = "Herdr Comments"
+version = "0.1.0"
+description = "Comment on copied terminal text and review per-pane collections."
+min_herdr_version = "0.7.5"
+platforms = ["macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[actions]]
+id = "capture"
+title = "Comment on copied text"
+description = "Open a compact editor for the copied terminal selection."
+contexts = ["pane"]
+command = ["./target/release/herdr-comments", "capture"]
+
+[[actions]]
+id = "review"
+title = "Review collected comments"
+description = "Edit this pane's collected comments in Neovim before inserting them."
+contexts = ["pane"]
+command = ["./target/release/herdr-comments", "review"]
+
+[[panes]]
+id = "capture"
+title = "Comment"
+placement = "popup"
+width = "48%"
+height = "30%"
+command = ["./target/release/herdr-comments", "capture-popup"]
+
+[[panes]]
+id = "review"
+title = "Review comments"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["./target/release/herdr-comments", "review-popup"]
+
