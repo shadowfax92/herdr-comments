@@ -74,7 +74,7 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
             return Ok(ReviewResult::Cancelled);
         }
 
-        self.herdr.paste_text(&review.pane_id, &markdown)?;
+        self.herdr.send_text(&review.pane_id, &markdown)?;
         self.store
             .delete_comments(&review.scope, &review.comment_ids)
             .context("comments were inserted, but cleanup failed; do not retry this review")?;

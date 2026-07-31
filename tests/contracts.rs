@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use herdr_comments::context::ActionContext;
 use herdr_comments::herdr::{
-    capture_popup_args, classify_failure, paste_args, review_popup_args, FailureKind,
+    capture_popup_args, classify_failure, review_popup_args, send_text_args, FailureKind,
 };
 
 #[test]
@@ -53,11 +53,10 @@ fn popup_arguments_expose_only_the_opaque_id() {
 }
 
 #[test]
-fn pane_text_is_pasted_with_multiline_content_and_without_enter() {
-    let text = "> first\n>\n> second\n\nMy comment";
-    let args = paste_args("w1:p2", text);
+fn pane_text_is_inserted_without_enter() {
+    let args = send_text_args("w1:p2", "hello");
 
-    assert_eq!(args, ["pane", "paste", "w1:p2", text]);
+    assert_eq!(args, ["pane", "send-text", "w1:p2", "hello"]);
     assert!(!args.iter().any(|arg| arg == "enter" || arg == "run"));
 }
 

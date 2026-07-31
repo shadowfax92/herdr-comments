@@ -61,7 +61,7 @@ impl<'a, H: HerdrClient> CaptureService<'a, H> {
             }
             Completion::Insert => {
                 let markdown = format_comment(&draft.source_text, note)?;
-                self.herdr.paste_text(&draft.pane_id, &markdown)?;
+                self.herdr.send_text(&draft.pane_id, &markdown)?;
                 self.store.delete_draft(&draft.id)?;
                 let _ = self.herdr.notify(
                     "Comment inserted",
@@ -88,7 +88,7 @@ impl<'a, H: HerdrClient> CaptureService<'a, H> {
                     .collect::<Result<Vec<_>>>()?;
                 rendered.push(format_comment(&draft.source_text, note)?);
                 let markdown = format_collection(&rendered);
-                self.herdr.paste_text(&draft.pane_id, &markdown)?;
+                self.herdr.send_text(&draft.pane_id, &markdown)?;
                 let ids = comments
                     .iter()
                     .map(|comment| comment.id.clone())
