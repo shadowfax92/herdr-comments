@@ -101,6 +101,26 @@ fn client_width_reads_the_layout_right_edge_from_herdr() {
 }
 
 #[test]
+fn stale_handoff_binary_uses_the_installed_sibling() {
+    let temp = tempdir().unwrap();
+    let installed = temp.path().join("herdr");
+    std::fs::write(
+        &installed,
+        "#!/bin/sh\nprintf '%s\\n' '{\"result\":{\"layout\":{\"area\":{\"x\":30,\"width\":482}}}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stale = temp.path().join("herdr.fast-scroll-staging");
+
+    assert_eq!(
+        CliHerdr::new(stale, "/unused")
+            .client_width("w1:p2")
+            .unwrap(),
+        512
+    );
+}
+
+#[test]
 fn pane_capture_requests_rendered_history_without_unwrapping() {
     assert_eq!(
         pane_read_args("w1:p2", "recent", "ansi", Some(1_000)),

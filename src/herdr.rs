@@ -40,7 +40,7 @@ pub struct CliHerdr {
 impl CliHerdr {
     pub fn new(bin: impl Into<PathBuf>, socket_path: impl Into<PathBuf>) -> Self {
         Self {
-            bin: bin.into(),
+            bin: resolve_herdr_bin(bin.into()),
             socket_path: socket_path.into(),
         }
     }
@@ -93,6 +93,16 @@ impl CliHerdr {
             .x
             .saturating_add(response.result.layout.area.width))
     }
+}
+
+fn resolve_herdr_bin(bin: PathBuf) -> PathBuf {
+    if bin.is_file() {
+        return bin;
+    }
+    bin.parent()
+        .map(|parent| parent.join("herdr"))
+        .filter(|candidate| candidate.is_file())
+        .unwrap_or(bin)
 }
 
 impl HerdrClient for CliHerdr {
