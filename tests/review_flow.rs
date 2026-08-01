@@ -2,10 +2,11 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Result};
 use herdr_comments::annotation::ReviewTarget;
-use herdr_comments::herdr::{ClosePaneResult, HerdrClient};
-use herdr_comments::model::PaneSnapshot;
-use herdr_comments::review::{ReviewResult, ReviewService, ReviewStart};
-use herdr_comments::store::{scope_id, session_key, Store};
+use herdr_comments::config::PopupSize;
+use herdr_comments::herdr::HerdrClient;
+use herdr_comments::model::{PaneSnapshot, ReviewSession};
+use herdr_comments::review::{PasteResult, ReviewResult, ReviewService, ReviewStart};
+use herdr_comments::store::{scope_id, Store};
 use tempfile::tempdir;
 
 #[derive(Default)]
@@ -13,7 +14,6 @@ struct RecordingHerdr {
     opened: Mutex<Vec<String>>,
     sent: Mutex<Vec<(String, String)>>,
     notifications: Mutex<Vec<(String, String)>>,
-    closed: Mutex<Vec<String>>,
     fail_send: Mutex<bool>,
 }
 
@@ -22,16 +22,11 @@ impl HerdrClient for RecordingHerdr {
         unreachable!()
     }
 
-    fn open_annotation(&self, _run_id: &str) -> Result<String> {
+    fn open_annotation(&self, _run_id: &str, _popup: &PopupSize) -> Result<()> {
         unreachable!()
     }
 
-    fn close_plugin_pane(&self, pane_id: &str) -> Result<ClosePaneResult> {
-        self.closed.lock().unwrap().push(pane_id.to_owned());
-        Ok(ClosePaneResult::Closed)
-    }
-
-    fn open_review(&self, review_id: &str) -> Result<()> {
+    fn open_review(&self, review_id: &str, _popup: &PopupSize) -> Result<()> {
         self.opened.lock().unwrap().push(review_id.to_owned());
         Ok(())
     }
@@ -60,9 +55,39 @@ fn target(scope: &str) -> ReviewTarget {
     ReviewTarget {
         pane_id: "w1:p1".into(),
         scope: scope.into(),
-        annotation_run_id: None,
-        overlay_pane_id: None,
     }
+}
+
+fn popup() -> PopupSize {
+    PopupSize {
+        width: "70%".into(),
+        height: "85%".into(),
+    }
+}
+
+fn opened_review(start: ReviewStart) -> ReviewSession {
+    let ReviewStart::Opened(review) = start else {
+        panic!("expected an open review");
+    };
+    review
+}
+
+fn save_review(
+    store: &Store,
+    service: &ReviewService<'_, RecordingHerdr>,
+    scope: &str,
+    markdown: &str,
+) -> ReviewSession {
+    let review = opened_review(service.start(&target(scope), &popup()).unwrap());
+    std::fs::write(store.review_markdown_path(&review.id).unwrap(), markdown).unwrap();
+    store.confirm_review(&review.id).unwrap();
+    assert_eq!(
+        service.finish(&review.id).unwrap(),
+        ReviewResult::Saved {
+            count: review.comment_ids.len()
+        }
+    );
+    review
 }
 
 #[test]
@@ -73,7 +98,10 @@ fn empty_collection_notifies_without_opening() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
 
-    assert_eq!(service.start(&target(&scope)).unwrap(), ReviewStart::Empty);
+    assert_eq!(
+        service.start(&target(&scope), &popup()).unwrap(),
+        ReviewStart::Empty
+    );
     assert!(herdr.opened.lock().unwrap().is_empty());
     assert!(herdr.notifications.lock().unwrap()[0]
         .1
@@ -90,9 +118,7 @@ fn review_opens_an_exact_markdown_snapshot_with_an_opaque_id() {
     store.add_comment(&scope, "first", "note one").unwrap();
     store.add_comment(&scope, "second", "note two").unwrap();
 
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
+    let review = opened_review(service.start(&target(&scope), &popup()).unwrap());
 
     assert_eq!(
         herdr.opened.lock().unwrap().as_slice(),
@@ -106,7 +132,7 @@ fn review_opens_an_exact_markdown_snapshot_with_an_opaque_id() {
 }
 
 #[test]
-fn saved_review_inserts_exact_edits_and_clears_the_snapshot() {
+fn saving_creates_a_ready_draft_without_pasting_or_clearing_comments() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
@@ -114,147 +140,138 @@ fn saved_review_inserts_exact_edits_and_clears_the_snapshot() {
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note one").unwrap();
     store.add_comment(&scope, "second", "note two").unwrap();
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
     let edited = "> second\n\nrevised\n\n> first\n\nnote one\n";
-    std::fs::write(store.review_markdown_path(&review.id).unwrap(), edited).unwrap();
-    store.confirm_review(&review.id).unwrap();
 
-    let result = service.complete(&review.id).unwrap();
+    let review = save_review(&store, &service, &scope, edited);
 
-    assert_eq!(result, ReviewResult::Inserted { count: 2 });
-    assert_eq!(
-        herdr.sent.lock().unwrap()[0],
-        ("w1:p1".into(), edited.into())
-    );
-    assert!(store.list_comments(&scope).unwrap().is_empty());
+    let ready = store.ready_review(&scope).unwrap().unwrap();
+    assert_eq!(ready.markdown, edited);
+    assert_eq!(ready.comment_ids, review.comment_ids);
+    assert!(herdr.sent.lock().unwrap().is_empty());
+    assert_eq!(store.list_comments(&scope).unwrap().len(), 2);
     assert!(store.load_review(&review.id).is_err());
 }
 
 #[test]
-fn quitting_without_write_cancels_and_preserves_collection() {
+fn cancelling_review_preserves_comments_and_the_previous_ready_draft() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
+    save_review(&store, &service, &scope, "saved draft\n");
+    let review = opened_review(service.start(&target(&scope), &popup()).unwrap());
 
-    assert_eq!(
-        service.complete(&review.id).unwrap(),
-        ReviewResult::Cancelled
-    );
+    assert_eq!(service.finish(&review.id).unwrap(), ReviewResult::Cancelled);
     assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
+    assert_eq!(
+        store.ready_review(&scope).unwrap().unwrap().markdown,
+        "saved draft\n"
+    );
     assert!(store.load_review(&review.id).is_err());
     assert!(herdr.sent.lock().unwrap().is_empty());
 }
 
 #[test]
-fn saved_blank_review_preserves_collection_without_inserting() {
+fn saving_a_blank_review_preserves_the_previous_ready_draft() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
+    save_review(&store, &service, &scope, "saved draft\n");
+    let review = opened_review(service.start(&target(&scope), &popup()).unwrap());
     std::fs::write(store.review_markdown_path(&review.id).unwrap(), "\n").unwrap();
     store.confirm_review(&review.id).unwrap();
 
+    assert_eq!(service.finish(&review.id).unwrap(), ReviewResult::Cancelled);
     assert_eq!(
-        service.complete(&review.id).unwrap(),
-        ReviewResult::Cancelled
+        store.ready_review(&scope).unwrap().unwrap().markdown,
+        "saved draft\n"
     );
     assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
     assert!(herdr.sent.lock().unwrap().is_empty());
 }
 
 #[test]
-fn send_failure_retains_review_and_collection_for_retry() {
+fn paste_without_a_ready_draft_notifies_and_does_nothing() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
-    store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
-    store.confirm_review(&review.id).unwrap();
-    *herdr.fail_send.lock().unwrap() = true;
 
-    assert!(service.complete(&review.id).is_err());
-    assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
-    assert!(store.load_review(&review.id).is_ok());
+    assert_eq!(
+        service.paste_ready(&target(&scope)).unwrap(),
+        PasteResult::Empty
+    );
+    assert!(herdr.sent.lock().unwrap().is_empty());
+    assert!(herdr.notifications.lock().unwrap()[0]
+        .1
+        .contains("No saved review"));
 }
 
 #[test]
-fn successful_review_deletes_only_the_snapshotted_comments() {
+fn paste_sends_the_ready_draft_and_clears_only_its_comments() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
-        panic!("expected an open review");
-    };
+    save_review(&store, &service, &scope, "edited draft\n");
     let later = store.add_comment(&scope, "later", "keep me").unwrap();
-    store.confirm_review(&review.id).unwrap();
 
-    service.complete(&review.id).unwrap();
+    assert_eq!(
+        service.paste_ready(&target(&scope)).unwrap(),
+        PasteResult::Pasted { count: 1 }
+    );
 
+    assert_eq!(
+        herdr.sent.lock().unwrap().as_slice(),
+        [("w1:p1".into(), "edited draft\n".into())]
+    );
+    assert!(store.ready_review(&scope).unwrap().is_none());
     let remaining = store.list_comments(&scope).unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, later.id);
 }
 
 #[test]
-fn successful_overlay_review_closes_the_view_and_clears_its_run() {
+fn send_failure_retains_the_ready_draft_and_collection_for_retry() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
-    let run = store
-        .create_annotation(
-            "w1:p1",
-            &scope,
-            &session_key("socket"),
-            PaneSnapshot {
-                text: "source".into(),
-                ansi: "source".into(),
-                initial_top: 0,
-                viewport_rows: 1,
-                history_limited: false,
-            },
-        )
-        .unwrap();
-    let run = store.attach_annotation(&run.id, "w1:p9").unwrap();
-    store.add_comment(&scope, "source", "note").unwrap();
-    let target = ReviewTarget {
-        pane_id: run.pane_id.clone(),
-        scope: run.scope.clone(),
-        annotation_run_id: Some(run.id.clone()),
-        overlay_pane_id: run.overlay_pane_id.clone(),
-    };
-    let ReviewStart::Opened(review) = service.start(&target).unwrap() else {
-        panic!("expected an open review");
-    };
-    store.confirm_review(&review.id).unwrap();
+    store.add_comment(&scope, "first", "note").unwrap();
+    save_review(&store, &service, &scope, "saved draft\n");
+    *herdr.fail_send.lock().unwrap() = true;
 
-    service.complete(&review.id).unwrap();
+    assert!(service.paste_ready(&target(&scope)).is_err());
+    assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
+    assert_eq!(
+        store.ready_review(&scope).unwrap().unwrap().markdown,
+        "saved draft\n"
+    );
+}
 
-    assert_eq!(herdr.closed.lock().unwrap().as_slice(), ["w1:p9"]);
-    assert!(store.load_annotation(&run.id).is_err());
-    assert!(store
-        .active_annotation(&session_key("socket"))
-        .unwrap()
-        .is_none());
+#[test]
+fn a_new_saved_review_replaces_the_previous_ready_draft() {
+    let temp = tempdir().unwrap();
+    let store = Store::open(temp.path().join("state")).unwrap();
+    let herdr = RecordingHerdr::default();
+    let service = ReviewService::new(&store, &herdr);
+    let scope = scope_id("socket", "w1:p1");
+    store.add_comment(&scope, "first", "note").unwrap();
+    save_review(&store, &service, &scope, "first draft\n");
+    store.add_comment(&scope, "second", "note").unwrap();
+
+    save_review(&store, &service, &scope, "replacement draft\n");
+
+    let ready = store.ready_review(&scope).unwrap().unwrap();
+    assert_eq!(ready.markdown, "replacement draft\n");
+    assert_eq!(ready.comment_ids.len(), 2);
 }

@@ -1,12 +1,14 @@
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread;
 
+use herdr_comments::config::PopupSize;
 use herdr_comments::context::ActionContext;
 use herdr_comments::herdr::{
-    annotation_overlay_args, classify_failure, pane_read_args, pane_send_input_request,
-    review_popup_args, CliHerdr, FailureKind, HerdrClient,
+    annotation_popup_args, classify_failure, pane_layout_args, pane_read_args,
+    pane_send_input_request, review_popup_args, CliHerdr, FailureKind, HerdrClient,
 };
 use serde_json::Value;
 use tempfile::tempdir;
@@ -42,21 +44,60 @@ fn action_context_rejects_missing_required_values() {
 
 #[test]
 fn plugin_panes_expose_only_opaque_state_ids() {
-    let capture = annotation_overlay_args("abc123");
-    let review = review_popup_args("def456");
+    let capture = annotation_popup_args(
+        "abc123",
+        &PopupSize {
+            width: "70%".into(),
+            height: "90%".into(),
+        },
+    );
+    let review = review_popup_args(
+        "def456",
+        &PopupSize {
+            width: "70%".into(),
+            height: "85%".into(),
+        },
+    );
 
     assert_eq!(capture[0..3], ["plugin", "pane", "open"]);
     assert!(capture
         .windows(2)
-        .any(|pair| pair == ["--placement", "overlay"]));
+        .any(|pair| pair == ["--placement", "popup"]));
+    assert!(capture.windows(2).any(|pair| pair == ["--width", "70%"]));
+    assert!(capture.windows(2).any(|pair| pair == ["--height", "90%"]));
     assert!(capture
         .iter()
         .any(|arg| arg == "HERDR_COMMENTS_RUN_ID=abc123"));
-    assert!(review.windows(2).any(|pair| pair == ["--width", "90%"]));
+    assert!(review.windows(2).any(|pair| pair == ["--width", "70%"]));
     assert!(review.windows(2).any(|pair| pair == ["--height", "85%"]));
     assert!(review
         .iter()
         .any(|arg| arg == "HERDR_COMMENTS_REVIEW_ID=def456"));
+}
+
+#[test]
+fn client_width_uses_the_full_layout_for_the_focused_pane() {
+    assert_eq!(
+        pane_layout_args("w1:p2"),
+        ["pane", "layout", "--pane", "w1:p2"]
+    );
+}
+
+#[test]
+fn client_width_reads_the_layout_right_edge_from_herdr() {
+    let temp = tempdir().unwrap();
+    let bin = temp.path().join("herdr");
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\nprintf '%s\\n' '{\"result\":{\"layout\":{\"area\":{\"x\":30,\"width\":482}}}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert_eq!(
+        CliHerdr::new(bin, "/unused").client_width("w1:p2").unwrap(),
+        512
+    );
 }
 
 #[test]
@@ -131,6 +172,6 @@ fn manifest_declares_the_public_contract() {
     assert!(manifest.contains("platforms = [\"macos\"]"));
     assert!(manifest.contains("id = \"capture\""));
     assert!(manifest.contains("id = \"review\""));
-    assert!(manifest.contains("placement = \"overlay\""));
+    assert!(manifest.contains("id = \"paste\""));
     assert!(manifest.contains("placement = \"popup\""));
 }

@@ -18,14 +18,23 @@ command = ["./target/release/herdr-comments", "capture"]
 [[actions]]
 id = "review"
 title = "Review collected comments"
-description = "Edit this pane's collected comments in Neovim before inserting them."
+description = "Edit this pane's collected comments in Neovim and save a ready draft."
 contexts = ["pane"]
 command = ["./target/release/herdr-comments", "review"]
+
+[[actions]]
+id = "paste"
+title = "Paste saved review"
+description = "Paste this pane's saved review without submitting it."
+contexts = ["pane"]
+command = ["./target/release/herdr-comments", "paste"]
 
 [[panes]]
 id = "capture"
 title = "Annotate pane history"
-placement = "overlay"
+placement = "popup"
+width = "90%"
+height = "90%"
 command = ["./target/release/herdr-comments", "capture-popup"]
 
 [[panes]]

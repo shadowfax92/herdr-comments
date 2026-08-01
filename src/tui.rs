@@ -17,10 +17,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::annotation::ReviewTarget;
-use crate::herdr::HerdrClient;
 use crate::model::PaneSnapshot;
-use crate::review::{ReviewService, ReviewStart};
 use crate::snapshot::rows;
 use crate::store::Store;
 
@@ -53,7 +50,6 @@ enum Mode {
 pub enum InputOutcome {
     Continue,
     SaveComment { source: String, note: String },
-    Review,
     Exit,
 }
 
@@ -150,9 +146,6 @@ impl AnnotationState {
     }
 
     fn handle_source_key(&mut self, key: KeyEvent) -> InputOutcome {
-        if review_key(key) {
-            return InputOutcome::Review;
-        }
         match key.code {
             KeyCode::Esc => {
                 if matches!(self.mode, Mode::Visual { .. }) {
@@ -229,13 +222,13 @@ impl AnnotationState {
                 self.mode = Mode::Normal;
                 InputOutcome::Continue
             }
-            (KeyCode::Char('s' | 'S'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            (KeyCode::Enter, modifiers) if !modifiers.contains(KeyModifiers::ALT) => {
                 InputOutcome::SaveComment {
                     source: source.clone(),
                     note: editor.text(),
                 }
             }
-            (KeyCode::Enter, _) => {
+            (KeyCode::Enter, modifiers) if modifiers.contains(KeyModifiers::ALT) => {
                 editor.insert_newline();
                 InputOutcome::Continue
             }
@@ -499,7 +492,7 @@ impl NoteEditor {
     }
 }
 
-pub fn run_annotation<H: HerdrClient>(store: &Store, herdr: &H, run_id: &str) -> Result<()> {
+pub fn run_annotation(store: &Store, run_id: &str) -> Result<()> {
     let run = store.load_annotation(run_id)?;
     let count = store.list_comments(&run.scope)?.len();
     let mut session = TerminalSession::start()?;
@@ -513,21 +506,6 @@ pub fn run_annotation<H: HerdrClient>(store: &Store, herdr: &H, run_id: &str) ->
                 InputOutcome::SaveComment { source, note } => {
                     match store.add_comment(&run.scope, &source, &note) {
                         Ok(_) => state.comment_saved(store.list_comments(&run.scope)?.len()),
-                        Err(error) => state.set_error(error.to_string()),
-                    }
-                }
-                InputOutcome::Review => {
-                    let target = ReviewTarget {
-                        pane_id: run.pane_id.clone(),
-                        scope: run.scope.clone(),
-                        annotation_run_id: Some(run.id.clone()),
-                        overlay_pane_id: run.overlay_pane_id.clone(),
-                    };
-                    match ReviewService::new(store, herdr).start(&target) {
-                        Ok(ReviewStart::Opened(_)) => {}
-                        Ok(ReviewStart::Empty) => {
-                            state.set_error("Collect at least one comment before review")
-                        }
                         Err(error) => state.set_error(error.to_string()),
                     }
                 }
@@ -594,9 +572,9 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
         limited
     );
     let help = if matches!(state.mode, Mode::Visual { .. }) {
-        " v/V select · c comment · esc cancel · alt-shift-c review "
+        " v/V select · c comment · esc cancel "
     } else {
-        " hjkl scroll · v/V select · q close · alt-shift-c review "
+        " hjkl scroll · v/V select · q done "
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -719,7 +697,7 @@ fn render_comment(frame: &mut Frame<'_>, state: &AnnotationState) {
 
     let message = state
         .error()
-        .unwrap_or(" ctrl-s collect · enter newline · esc cancel ");
+        .unwrap_or(" enter collect · alt-enter newline · esc cancel ");
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(format!(" COMMENT · {} collected ", state.comment_count)).style(
@@ -736,12 +714,6 @@ fn render_comment(frame: &mut Frame<'_>, state: &AnnotationState) {
         ]),
         footer_area,
     );
-}
-
-fn review_key(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('c' | 'C'))
-        && key.modifiers.contains(KeyModifiers::ALT)
-        && (key.modifiers.contains(KeyModifiers::SHIFT) || matches!(key.code, KeyCode::Char('C')))
 }
 
 fn ordered(first: SourcePosition, second: SourcePosition) -> (SourcePosition, SourcePosition) {
@@ -832,9 +804,11 @@ mod tests {
         state.handle_key(key(KeyCode::Char('c'), KeyModifiers::NONE));
 
         assert!(state.is_commenting());
-        state.handle_paste("first line\nsecond line");
+        state.handle_paste("first line");
+        state.handle_key(key(KeyCode::Enter, KeyModifiers::ALT));
+        state.handle_paste("second line");
         assert_eq!(
-            state.handle_key(key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            state.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
             InputOutcome::SaveComment {
                 source: "alpha\nbeta value".into(),
                 note: "first line\nsecond line".into(),
@@ -865,15 +839,8 @@ mod tests {
     }
 
     #[test]
-    fn review_chord_and_exit_are_distinct_outcomes() {
+    fn normal_mode_exit_closes_the_popup() {
         let mut state = AnnotationState::new(snapshot(), 2);
-        assert_eq!(
-            state.handle_key(key(
-                KeyCode::Char('C'),
-                KeyModifiers::ALT | KeyModifiers::SHIFT
-            )),
-            InputOutcome::Review
-        );
         assert_eq!(
             state.handle_key(key(KeyCode::Char('q'), KeyModifiers::NONE)),
             InputOutcome::Exit

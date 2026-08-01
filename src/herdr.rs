@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::config::PopupSize;
 use crate::model::PaneSnapshot;
 use crate::snapshot::{assemble, rows, ScrollState, CAPTURE_ROWS};
 
@@ -22,17 +23,10 @@ pub enum FailureKind {
     Command,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClosePaneResult {
-    Closed,
-    Missing,
-}
-
 pub trait HerdrClient {
     fn capture_snapshot(&self, pane_id: &str) -> Result<PaneSnapshot>;
-    fn open_annotation(&self, run_id: &str) -> Result<String>;
-    fn close_plugin_pane(&self, pane_id: &str) -> Result<ClosePaneResult>;
-    fn open_review(&self, review_id: &str) -> Result<()>;
+    fn open_annotation(&self, run_id: &str, popup: &PopupSize) -> Result<()>;
+    fn open_review(&self, review_id: &str, popup: &PopupSize) -> Result<()>;
     fn send_input(&self, pane_id: &str, text: &str) -> Result<()>;
     fn notify(&self, title: &str, body: &str) -> Result<()>;
 }
@@ -87,6 +81,18 @@ impl CliHerdr {
             .map(RawScroll::try_into)
             .transpose()
     }
+
+    pub fn client_width(&self, pane_id: &str) -> Result<u16> {
+        let output = self.run(&pane_layout_args(pane_id), "measure the Herdr client")?;
+        let response: LayoutEnvelope =
+            serde_json::from_slice(&output.stdout).context("invalid Herdr layout response")?;
+        Ok(response
+            .result
+            .layout
+            .area
+            .x
+            .saturating_add(response.result.layout.area.width))
+    }
 }
 
 impl HerdrClient for CliHerdr {
@@ -110,32 +116,19 @@ impl HerdrClient for CliHerdr {
         )
     }
 
-    fn open_annotation(&self, run_id: &str) -> Result<String> {
-        let output = self.run(&annotation_overlay_args(run_id), "open the annotation view")?;
-        let response: PluginPaneOpenEnvelope =
-            serde_json::from_slice(&output.stdout).context("invalid Herdr plugin pane response")?;
-        let pane_id = response.result.plugin_pane.pane.pane_id;
-        validate_pane_id(&pane_id)?;
-        Ok(pane_id)
+    fn open_annotation(&self, run_id: &str, popup: &PopupSize) -> Result<()> {
+        self.run(
+            &annotation_popup_args(run_id, popup),
+            "open the annotation popup",
+        )?;
+        Ok(())
     }
 
-    fn close_plugin_pane(&self, pane_id: &str) -> Result<ClosePaneResult> {
-        let output = Command::new(&self.bin)
-            .args(plugin_pane_close_args(pane_id))
-            .output()
-            .context("failed to start Herdr while trying to close the annotation view")?;
-        if output.status.success() {
-            return Ok(ClosePaneResult::Closed);
-        }
-        let diagnostic = diagnostic(&output).to_ascii_lowercase();
-        if diagnostic.contains("plugin_pane_not_found") {
-            return Ok(ClosePaneResult::Missing);
-        }
-        fail("close the annotation view", &output)
-    }
-
-    fn open_review(&self, review_id: &str) -> Result<()> {
-        self.run(&review_popup_args(review_id), "open the review popup")?;
+    fn open_review(&self, review_id: &str, popup: &PopupSize) -> Result<()> {
+        self.run(
+            &review_popup_args(review_id, popup),
+            "open the review popup",
+        )?;
         Ok(())
     }
 
@@ -149,7 +142,7 @@ impl HerdrClient for CliHerdr {
     }
 }
 
-pub fn annotation_overlay_args(run_id: &str) -> Vec<String> {
+pub fn annotation_popup_args(run_id: &str, popup: &PopupSize) -> Vec<String> {
     vec![
         "plugin".into(),
         "pane".into(),
@@ -159,14 +152,18 @@ pub fn annotation_overlay_args(run_id: &str) -> Vec<String> {
         "--entrypoint".into(),
         "capture".into(),
         "--placement".into(),
-        "overlay".into(),
+        "popup".into(),
+        "--width".into(),
+        popup.width.clone(),
+        "--height".into(),
+        popup.height.clone(),
         "--env".into(),
         format!("HERDR_COMMENTS_RUN_ID={run_id}"),
         "--focus".into(),
     ]
 }
 
-pub fn review_popup_args(review_id: &str) -> Vec<String> {
+pub fn review_popup_args(review_id: &str, popup: &PopupSize) -> Vec<String> {
     vec![
         "plugin".into(),
         "pane".into(),
@@ -178,9 +175,9 @@ pub fn review_popup_args(review_id: &str) -> Vec<String> {
         "--placement".into(),
         "popup".into(),
         "--width".into(),
-        "90%".into(),
+        popup.width.clone(),
         "--height".into(),
-        "85%".into(),
+        popup.height.clone(),
         "--env".into(),
         format!("HERDR_COMMENTS_REVIEW_ID={review_id}"),
         "--focus".into(),
@@ -213,11 +210,11 @@ pub fn pane_get_args(pane_id: &str) -> Vec<String> {
     vec!["pane".into(), "get".into(), pane_id.into()]
 }
 
-pub fn plugin_pane_close_args(pane_id: &str) -> Vec<String> {
+pub fn pane_layout_args(pane_id: &str) -> Vec<String> {
     vec![
-        "plugin".into(),
         "pane".into(),
-        "close".into(),
+        "layout".into(),
+        "--pane".into(),
         pane_id.into(),
     ]
 }
@@ -363,6 +360,27 @@ struct RawPane {
 }
 
 #[derive(Deserialize)]
+struct LayoutEnvelope {
+    result: LayoutResult,
+}
+
+#[derive(Deserialize)]
+struct LayoutResult {
+    layout: ClientLayout,
+}
+
+#[derive(Deserialize)]
+struct ClientLayout {
+    area: LayoutArea,
+}
+
+#[derive(Deserialize)]
+struct LayoutArea {
+    x: u16,
+    width: u16,
+}
+
+#[derive(Deserialize)]
 struct RawScroll {
     offset_from_bottom: u64,
     max_offset_from_bottom: u64,
@@ -379,26 +397,6 @@ impl TryFrom<RawScroll> for ScrollState {
             viewport_rows: value.viewport_rows.try_into()?,
         })
     }
-}
-
-#[derive(Deserialize)]
-struct PluginPaneOpenEnvelope {
-    result: PluginPaneOpenResult,
-}
-
-#[derive(Deserialize)]
-struct PluginPaneOpenResult {
-    plugin_pane: PluginPane,
-}
-
-#[derive(Deserialize)]
-struct PluginPane {
-    pane: PluginPaneInfo,
-}
-
-#[derive(Deserialize)]
-struct PluginPaneInfo {
-    pane_id: String,
 }
 
 #[derive(Serialize)]

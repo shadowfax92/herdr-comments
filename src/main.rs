@@ -15,6 +15,7 @@ enum Command {
     CapturePopup,
     Review,
     ReviewPopup,
+    Paste,
     ConfirmReview {
         #[arg(long)]
         id: String,
@@ -35,6 +36,7 @@ fn run() -> Result<()> {
         Command::CapturePopup => herdr_comments::capture_popup(),
         Command::Review => herdr_comments::review_action(),
         Command::ReviewPopup => herdr_comments::review_popup(),
+        Command::Paste => herdr_comments::paste_action(),
         Command::ConfirmReview { id } => herdr_comments::confirm_review(&id),
     }
 }

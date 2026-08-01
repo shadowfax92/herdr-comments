@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::format::{normalize_note, normalize_source};
 use crate::model::{
-    ActiveAnnotation, AnnotationRun, Comment, PaneSnapshot, ReviewSession, SCHEMA_VERSION,
+    AnnotationRun, Comment, PaneSnapshot, ReadyReview, ReviewSession, SCHEMA_VERSION,
 };
 
 const TRANSIENT_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -26,7 +26,7 @@ impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         ensure_private_dir(&root)?;
-        for name in ["active", "runs", "collections", "reviews"] {
+        for name in ["runs", "collections", "reviews", "ready"] {
             ensure_private_dir(&root.join(name))?;
         }
         Ok(Self { root })
@@ -36,31 +36,26 @@ impl Store {
         &self,
         pane_id: &str,
         scope: &str,
-        session_key: &str,
         snapshot: PaneSnapshot,
     ) -> Result<AnnotationRun> {
-        self.create_annotation_at(pane_id, scope, session_key, snapshot, now_ms())
+        self.create_annotation_at(pane_id, scope, snapshot, now_ms())
     }
 
     fn create_annotation_at(
         &self,
         pane_id: &str,
         scope: &str,
-        session_key: &str,
         snapshot: PaneSnapshot,
         created_at_ms: u64,
     ) -> Result<AnnotationRun> {
         validate_pane_id(pane_id)?;
         validate_scope(scope)?;
-        validate_scope(session_key)?;
         let run = AnnotationRun {
             schema_version: SCHEMA_VERSION,
             id: new_id(),
             pane_id: pane_id.to_owned(),
             scope: scope.to_owned(),
-            session_key: session_key.to_owned(),
             snapshot,
-            overlay_pane_id: None,
             created_at_ms,
         };
         atomic_json(&self.annotation_path(&run.id)?, &run)?;
@@ -72,66 +67,11 @@ impl Store {
         validate_model(&run.id, id, run.schema_version)?;
         validate_pane_id(&run.pane_id)?;
         validate_scope(&run.scope)?;
-        validate_scope(&run.session_key)?;
         Ok(run)
-    }
-
-    pub fn attach_annotation(&self, id: &str, overlay_pane_id: &str) -> Result<AnnotationRun> {
-        validate_pane_id(overlay_pane_id)?;
-        let mut run = self.load_annotation(id)?;
-        run.overlay_pane_id = Some(overlay_pane_id.to_owned());
-        atomic_json(&self.annotation_path(id)?, &run)?;
-        let active = ActiveAnnotation {
-            schema_version: SCHEMA_VERSION,
-            run_id: id.to_owned(),
-            overlay_pane_id: overlay_pane_id.to_owned(),
-        };
-        atomic_json(&self.active_annotation_path(&run.session_key)?, &active)?;
-        Ok(run)
-    }
-
-    pub fn active_annotation(&self, session_key: &str) -> Result<Option<ActiveAnnotation>> {
-        let path = self.active_annotation_path(session_key)?;
-        if !path.exists() {
-            return Ok(None);
-        }
-        let active: ActiveAnnotation = read_json(&path)?;
-        if active.schema_version != SCHEMA_VERSION {
-            bail!("active annotation has an unsupported schema");
-        }
-        validate_id(&active.run_id)?;
-        validate_pane_id(&active.overlay_pane_id)?;
-        Ok(Some(active))
-    }
-
-    pub fn annotation_for_overlay(
-        &self,
-        session_key: &str,
-        pane_id: &str,
-    ) -> Result<Option<AnnotationRun>> {
-        let Some(active) = self.active_annotation(session_key)? else {
-            return Ok(None);
-        };
-        if active.overlay_pane_id != pane_id {
-            return Ok(None);
-        }
-        let run = self.load_annotation(&active.run_id)?;
-        if run.session_key != session_key || run.overlay_pane_id.as_deref() != Some(pane_id) {
-            bail!("active annotation points to a different overlay");
-        }
-        Ok(Some(run))
     }
 
     pub fn delete_annotation(&self, id: &str) -> Result<()> {
         validate_id(id)?;
-        if let Ok(run) = self.load_annotation(id) {
-            if self
-                .active_annotation(&run.session_key)?
-                .is_some_and(|active| active.run_id == id)
-            {
-                remove_private_file(&self.active_annotation_path(&run.session_key)?)?;
-            }
-        }
         remove_private_file(&self.annotation_path(id)?)
     }
 
@@ -204,31 +144,16 @@ impl Store {
         scope: &str,
         comment_ids: Vec<String>,
         markdown: &str,
-        annotation_run_id: Option<String>,
-        overlay_pane_id: Option<String>,
     ) -> Result<ReviewSession> {
         validate_pane_id(pane_id)?;
         validate_scope(scope)?;
-        if comment_ids.is_empty() {
-            bail!("review context is invalid");
-        }
-        for id in &comment_ids {
-            validate_id(id)?;
-        }
-        if let Some(id) = annotation_run_id.as_deref() {
-            validate_id(id)?;
-        }
-        if let Some(id) = overlay_pane_id.as_deref() {
-            validate_pane_id(id)?;
-        }
+        validate_comment_ids(&comment_ids)?;
         let review = ReviewSession {
             schema_version: SCHEMA_VERSION,
             id: new_id(),
             pane_id: pane_id.to_owned(),
             scope: scope.to_owned(),
             comment_ids,
-            annotation_run_id,
-            overlay_pane_id,
             created_at_ms: now_ms(),
         };
         atomic_json(&self.review_json_path(&review.id)?, &review)?;
@@ -239,6 +164,9 @@ impl Store {
     pub fn load_review(&self, id: &str) -> Result<ReviewSession> {
         let review: ReviewSession = read_json(&self.review_json_path(id)?)?;
         validate_model(&review.id, id, review.schema_version)?;
+        validate_pane_id(&review.pane_id)?;
+        validate_scope(&review.scope)?;
+        validate_comment_ids(&review.comment_ids)?;
         Ok(review)
     }
 
@@ -269,6 +197,50 @@ impl Store {
             remove_private_file(&path)?;
         }
         Ok(())
+    }
+
+    pub fn promote_review(&self, id: &str) -> Result<ReadyReview> {
+        let review = self.load_review(id)?;
+        let ready = ReadyReview {
+            schema_version: SCHEMA_VERSION,
+            id: review.id.clone(),
+            pane_id: review.pane_id,
+            scope: review.scope,
+            comment_ids: review.comment_ids,
+            markdown: self.read_review_markdown(id)?,
+            created_at_ms: now_ms(),
+        };
+        atomic_json(&self.ready_review_path(&ready.scope)?, &ready)?;
+        self.delete_review(id)?;
+        Ok(ready)
+    }
+
+    pub fn ready_review(&self, scope: &str) -> Result<Option<ReadyReview>> {
+        let path = self.ready_review_path(scope)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let ready: ReadyReview = read_json(&path)?;
+        if ready.schema_version != SCHEMA_VERSION {
+            bail!("ready review has an unsupported schema");
+        }
+        validate_id(&ready.id)?;
+        validate_pane_id(&ready.pane_id)?;
+        validate_scope(&ready.scope)?;
+        if ready.scope != scope {
+            bail!("ready review belongs to a different pane");
+        }
+        validate_comment_ids(&ready.comment_ids)?;
+        Ok(Some(ready))
+    }
+
+    pub fn delete_ready_review(&self, scope: &str) -> Result<()> {
+        remove_private_file(&self.ready_review_path(scope)?)
+    }
+
+    pub fn ready_review_path(&self, scope: &str) -> Result<PathBuf> {
+        validate_scope(scope)?;
+        Ok(self.root.join("ready").join(format!("{scope}.json")))
     }
 
     pub fn cleanup_transients(&self) -> Result<usize> {
@@ -302,11 +274,6 @@ impl Store {
         Ok(removed)
     }
 
-    fn active_annotation_path(&self, session_key: &str) -> Result<PathBuf> {
-        validate_scope(session_key)?;
-        Ok(self.root.join("active").join(format!("{session_key}.json")))
-    }
-
     fn collection_dir(&self, scope: &str) -> Result<PathBuf> {
         validate_scope(scope)?;
         Ok(self.root.join("collections").join(scope))
@@ -328,12 +295,6 @@ pub fn scope_id(session_identity: &str, pane_id: &str) -> String {
     hasher.update(session_identity.as_bytes());
     hasher.update([0]);
     hasher.update(pane_id.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-pub fn session_key(session_identity: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(session_identity.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -433,6 +394,16 @@ fn validate_pane_id(pane_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_comment_ids(ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        bail!("review context is invalid");
+    }
+    for id in ids {
+        validate_id(id)?;
+    }
+    Ok(())
+}
+
 fn valid_id(id: &str) -> bool {
     id.len() == 32 && id.chars().all(|ch| ch.is_ascii_hexdigit())
 }
@@ -488,7 +459,7 @@ mod tests {
         let scope = scope_id("socket", "w1:p1");
         let old = now_ms().saturating_sub(TRANSIENT_TTL_MS + 1);
         let run = store
-            .create_annotation_at("w1:p1", &scope, &session_key("socket"), snapshot(), old)
+            .create_annotation_at("w1:p1", &scope, snapshot(), old)
             .unwrap();
         store.add_comment(&scope, "source", "note").unwrap();
 

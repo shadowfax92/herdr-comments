@@ -2,7 +2,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 
 use herdr_comments::format::{format_collection, format_comment};
 use herdr_comments::model::PaneSnapshot;
-use herdr_comments::store::{scope_id, session_key, Store};
+use herdr_comments::store::{scope_id, Store};
 use tempfile::tempdir;
 
 #[test]
@@ -69,6 +69,10 @@ fn state_directories_and_files_are_private() {
     let store = Store::open(&root).unwrap();
     let scope = scope_id("socket", "w1:p1");
     let comment = store.add_comment(&scope, "source", "note").unwrap();
+    let review = store
+        .create_review("w1:p1", &scope, vec![comment.id.clone()], "ready draft\n")
+        .unwrap();
+    store.promote_review(&review.id).unwrap();
 
     let root_mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
     let file_mode = std::fs::metadata(store.comment_path(&scope, &comment.id))
@@ -76,9 +80,15 @@ fn state_directories_and_files_are_private() {
         .permissions()
         .mode()
         & 0o777;
+    let ready_mode = std::fs::metadata(store.ready_review_path(&scope).unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
 
     assert_eq!(root_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(ready_mode, 0o600);
 }
 
 #[test]
@@ -108,7 +118,7 @@ fn annotation_runs_keep_private_snapshot_context_and_use_opaque_ids() {
         history_limited: false,
     };
     let run = store
-        .create_annotation("w4:p7", &scope, &session_key("socket"), snapshot.clone())
+        .create_annotation("w4:p7", &scope, snapshot.clone())
         .unwrap();
     let loaded = store.load_annotation(&run.id).unwrap();
 
