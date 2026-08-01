@@ -8,7 +8,7 @@ use crate::annotation::ReviewTarget;
 use crate::config::PopupSize;
 use crate::format::{format_collection, format_comment, validate_review};
 use crate::herdr::HerdrClient;
-use crate::model::ReviewSession;
+use crate::model::{ReadyReview, ReviewSession};
 use crate::store::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +95,11 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
     }
 
     pub fn paste_ready(&self, target: &ReviewTarget) -> Result<PasteResult> {
-        let Some(ready) = self.store.ready_review(&target.scope)? else {
-            let _ = self
-                .herdr
-                .notify("Herdr Comments", "No saved review is ready for this pane.");
+        let Some(ready) = self.ready_for_paste(target)? else {
+            let _ = self.herdr.notify(
+                "Herdr Comments",
+                "No collected comments or saved review are ready for this pane.",
+            );
             return Ok(PasteResult::Empty);
         };
         if ready.pane_id != target.pane_id {
@@ -124,6 +125,34 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
             &format!("Pasted {count} comment(s) without submitting."),
         );
         Ok(PasteResult::Pasted { count })
+    }
+
+    fn ready_for_paste(&self, target: &ReviewTarget) -> Result<Option<ReadyReview>> {
+        if let Some(ready) = self.store.ready_review(&target.scope)? {
+            return Ok(Some(ready));
+        }
+
+        let comments = self.store.list_comments(&target.scope)?;
+        if comments.is_empty() {
+            return Ok(None);
+        }
+        let formatted = comments
+            .iter()
+            .map(|comment| format_comment(&comment.source_text, &comment.note))
+            .collect::<Result<Vec<_>>>()?;
+        let markdown = format_collection(&formatted);
+        validate_review(&markdown)?;
+        let comment_ids = comments.iter().map(|comment| comment.id.clone()).collect();
+        let review =
+            self.store
+                .create_review(&target.pane_id, &target.scope, comment_ids, &markdown)?;
+        match self.store.promote_review(&review.id) {
+            Ok(ready) => Ok(Some(ready)),
+            Err(error) => {
+                let _ = self.store.delete_review(&review.id);
+                Err(error)
+            }
+        }
     }
 }
 

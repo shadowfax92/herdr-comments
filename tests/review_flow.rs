@@ -196,7 +196,7 @@ fn saving_a_blank_review_preserves_the_previous_ready_draft() {
 }
 
 #[test]
-fn paste_without_a_ready_draft_notifies_and_does_nothing() {
+fn paste_without_comments_or_a_ready_draft_notifies_and_does_nothing() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let herdr = RecordingHerdr::default();
@@ -210,7 +210,48 @@ fn paste_without_a_ready_draft_notifies_and_does_nothing() {
     assert!(herdr.sent.lock().unwrap().is_empty());
     assert!(herdr.notifications.lock().unwrap()[0]
         .1
-        .contains("No saved review"));
+        .contains("No collected comments"));
+}
+
+#[test]
+fn paste_without_a_ready_draft_assembles_and_sends_collected_comments() {
+    let temp = tempdir().unwrap();
+    let store = Store::open(temp.path().join("state")).unwrap();
+    let herdr = RecordingHerdr::default();
+    let service = ReviewService::new(&store, &herdr);
+    let scope = scope_id("socket", "w1:p1");
+    store.add_comment(&scope, "first", "note one").unwrap();
+    store.add_comment(&scope, "second", "note two").unwrap();
+
+    assert_eq!(
+        service.paste_ready(&target(&scope)).unwrap(),
+        PasteResult::Pasted { count: 2 }
+    );
+
+    assert_eq!(
+        herdr.sent.lock().unwrap().as_slice(),
+        [(
+            "w1:p1".into(),
+            "> first\n\nnote one\n\n> second\n\nnote two\n".into()
+        )]
+    );
+    assert!(store.list_comments(&scope).unwrap().is_empty());
+    assert!(store.ready_review(&scope).unwrap().is_none());
+}
+
+#[test]
+fn direct_paste_failure_preserves_collected_comments_for_retry() {
+    let temp = tempdir().unwrap();
+    let store = Store::open(temp.path().join("state")).unwrap();
+    let herdr = RecordingHerdr::default();
+    let service = ReviewService::new(&store, &herdr);
+    let scope = scope_id("socket", "w1:p1");
+    store.add_comment(&scope, "first", "note").unwrap();
+    *herdr.fail_send.lock().unwrap() = true;
+
+    assert!(service.paste_ready(&target(&scope)).is_err());
+    assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
+    assert!(store.ready_review(&scope).unwrap().is_some());
 }
 
 #[test]

@@ -530,7 +530,7 @@ pub fn render(frame: &mut Frame<'_>, state: &mut AnnotationState) {
 
 fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
     let [source_area, footer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(frame.area());
     state.set_viewport(
         usize::from(source_area.height),
         usize::from(source_area.width),
@@ -576,6 +576,11 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
     } else {
         " hjkl scroll · v/V select · q done "
     };
+    let help_style = if state.error().is_some() {
+        Style::default().fg(Color::White).bg(Color::Red)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(status).style(
@@ -584,11 +589,10 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Line::from(state.error().unwrap_or(help)).style(if state.error().is_some() {
-                Style::default().fg(Color::White).bg(Color::Red)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            }),
+            Line::from(state.error().unwrap_or(help)).style(help_style),
+            Line::from(" after q: alt-shift-c final edit ")
+                .style(Style::default().fg(Color::DarkGray)),
+            Line::from("          alt-shift-p paste ").style(Style::default().fg(Color::DarkGray)),
         ]),
         footer_area,
     );
@@ -866,5 +870,7 @@ mod tests {
         assert_eq!(buffer[(0, 0)].fg, Color::Red);
         assert!(content.contains("NORMAL · 2 comments"));
         assert!(content.contains("v/V select"));
+        assert!(content.contains("alt-shift-c final edit"));
+        assert!(content.contains("alt-shift-p paste"));
     }
 }

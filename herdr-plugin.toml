@@ -24,8 +24,8 @@ command = ["./target/release/herdr-comments", "review"]
 
 [[actions]]
 id = "paste"
-title = "Paste saved review"
-description = "Paste this pane's saved review without submitting it."
+title = "Paste comments"
+description = "Paste this pane's reviewed draft or collected comments without submitting it."
 contexts = ["pane"]
 command = ["./target/release/herdr-comments", "paste"]
 

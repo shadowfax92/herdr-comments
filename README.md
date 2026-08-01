@@ -20,7 +20,7 @@ Herdr Comments turns passages from a terminal pane into quote-first Markdown for
 - **Per-pane collections** — every source pane and Herdr session has an isolated draft.
 - **Responsive popups** — widths follow the active Herdr client, including a narrower ultrawide profile.
 - **Neovim review** — reorder or rewrite the assembled Markdown, then save it as a ready draft.
-- **Explicit paste** — a separate shortcut bracketed-pastes the ready draft with no follow-up keys, so nothing is submitted automatically.
+- **Explicit paste** — a separate shortcut bracketed-pastes either the edited draft or the collected comments with no follow-up keys, so nothing is submitted automatically.
 - **Private local state** — snapshots, comments, reviews, and ready drafts use owner-only storage.
 
 ## Install
@@ -50,7 +50,7 @@ description = "Review collected comments"
 key = "alt+shift+p"
 type = "plugin_action"
 command = "shadowfax.comments.paste"
-description = "Paste saved comment review"
+description = "Paste collected or reviewed comments"
 ```
 
 Reload Herdr:
@@ -124,16 +124,23 @@ After `c`, the selected passage remains visible above a multiline Rust editor.
 
 Repeat selection and capture as many times as needed. Each saved entry is persisted immediately.
 
-### Review in Neovim
+### Finish or review
 
-Close the annotation popup with `q`, then press `Alt-Shift-c` in the source pane. Native popups receive their keys before Herdr's global bindings, so popup-local input cannot accidentally trigger this shortcut.
+Close the annotation popup with `q`. The footer keeps both next steps visible:
+
+- Press `Alt-Shift-p` to assemble and paste the collected comments immediately.
+- Press `Alt-Shift-c` to make a final edit in Neovim first.
+
+Native popups receive their keys before Herdr's global bindings, so use these shortcuts after closing the annotation popup.
 
 The Neovim popup contains only the assembled Markdown:
 
-- `:wq` or `ZZ` saves the edited Markdown as this pane's ready draft and closes Neovim. It does not paste.
+- `:wq`, `:wqa`, or `ZZ` saves the edited Markdown as this pane's ready draft and closes Neovim. It does not paste.
 - `q` or `:qa!` cancels review. The collected comments and any previously saved ready draft remain intact.
 
-Press `Alt-Shift-p` in the source pane when the draft is ready. That pastes it without sending `Enter`, then removes the pasted draft and only the comments included in it.
+After final editing, press `Alt-Shift-p` in the source pane to paste the ready draft. A ready draft takes priority; comments collected after it was saved remain available for the next paste.
+
+Both paths paste without sending `Enter`, then remove only the comments included in that paste.
 
 Herdr Comments calls Herdr's `pane.send_input` socket method with an empty key list. In applications that support bracketed paste, including the supported agent prompts, embedded newlines remain one unsubmitted paste. Inspect it and submit it yourself.
 
@@ -162,8 +169,8 @@ State is scoped by Herdr session and source pane under `HERDR_PLUGIN_STATE_DIR`.
 
 - Saved comments remain when the annotation popup closes.
 - Saving Neovim creates or replaces a persistent ready draft; cancelling preserves the previous one.
-- Successful paste removes the ready draft and only the comments included in it.
-- A failed paste preserves the ready draft and collection for retry.
+- Successful paste removes the generated or edited ready draft and only the comments included in it.
+- A failed paste preserves its generated or edited ready draft and collection for retry.
 - Interrupted annotation and Neovim sessions expire after 24 hours; collected comments and ready drafts do not.
 - `HERDR_COMMENTS_NVIM` can select a Neovim executable other than `nvim`.
 
