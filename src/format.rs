@@ -1,16 +1,17 @@
 use anyhow::{bail, Result};
 
 pub const MAX_SOURCE_BYTES: usize = 200 * 1024;
+pub const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_REVIEW_BYTES: usize = 1024 * 1024;
 
 pub fn normalize_source(text: &str) -> Result<String> {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     if normalized.trim().is_empty() {
-        bail!("the copied text is empty");
+        bail!("the selected text is empty");
     }
     if normalized.len() > MAX_SOURCE_BYTES {
         bail!(
-            "the copied text is {} bytes; select {} bytes or fewer",
+            "the selected text is {} bytes; select {} bytes or fewer",
             normalized.len(),
             MAX_SOURCE_BYTES
         );
@@ -20,15 +21,28 @@ pub fn normalize_source(text: &str) -> Result<String> {
 }
 
 pub fn normalize_note(note: &str) -> Result<String> {
-    let note = note.trim();
+    let normalized = note.replace("\r\n", "\n").replace('\r', "\n");
+    let note = normalized.trim();
     if note.is_empty() {
         bail!("write a comment before continuing");
     }
-    if note.contains(['\n', '\r']) {
-        bail!("comments in the capture popup must fit on one line");
+    if note.len() > MAX_SOURCE_BYTES {
+        bail!("the comment exceeds {MAX_SOURCE_BYTES} bytes");
     }
-    ensure_safe_text(note, false)?;
+    ensure_safe_text(note, true)?;
     Ok(note.to_owned())
+}
+
+pub fn normalize_snapshot(text: &str) -> Result<String> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.trim().is_empty() {
+        bail!("the pane has no text to annotate");
+    }
+    if normalized.len() > MAX_SNAPSHOT_BYTES {
+        bail!("the pane snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes");
+    }
+    ensure_safe_text(&normalized, true)?;
+    Ok(normalized)
 }
 
 pub fn validate_review(text: &str) -> Result<()> {
@@ -62,27 +76,6 @@ pub fn format_collection(comments: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
         + "\n"
-}
-
-pub fn preview_lines(text: &str, max_lines: usize, max_characters: usize) -> Vec<String> {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let limited = normalized.chars().take(max_characters).collect::<String>();
-    let all_lines = limited.split('\n').collect::<Vec<_>>();
-    let mut output = all_lines
-        .iter()
-        .take(max_lines)
-        .map(|line| {
-            if line.is_empty() {
-                ">".to_owned()
-            } else {
-                format!("> {line}")
-            }
-        })
-        .collect::<Vec<_>>();
-    if normalized.chars().count() > limited.chars().count() || all_lines.len() > max_lines {
-        output.push("> ... preview truncated".into());
-    }
-    output
 }
 
 fn ensure_safe_text(text: &str, allow_layout: bool) -> Result<()> {

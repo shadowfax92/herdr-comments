@@ -1,7 +1,7 @@
 id = "shadowfax.comments"
 name = "Herdr Comments"
 version = "0.1.0"
-description = "Comment on copied terminal text and review per-pane collections."
+description = "Select and comment on frozen pane history, then review in Neovim."
 min_herdr_version = "0.7.5"
 platforms = ["macos"]
 
@@ -10,8 +10,8 @@ command = ["cargo", "build", "--release"]
 
 [[actions]]
 id = "capture"
-title = "Comment on copied text"
-description = "Open a compact editor for the copied terminal selection."
+title = "Annotate pane history"
+description = "Open a frozen, scrollable annotation view for the focused pane."
 contexts = ["pane"]
 command = ["./target/release/herdr-comments", "capture"]
 
@@ -24,10 +24,8 @@ command = ["./target/release/herdr-comments", "review"]
 
 [[panes]]
 id = "capture"
-title = "Comment"
-placement = "popup"
-width = "48%"
-height = "30%"
+title = "Annotate pane history"
+placement = "overlay"
 command = ["./target/release/herdr-comments", "capture-popup"]
 
 [[panes]]
@@ -37,4 +35,3 @@ placement = "popup"
 width = "90%"
 height = "85%"
 command = ["./target/release/herdr-comments", "review-popup"]
-

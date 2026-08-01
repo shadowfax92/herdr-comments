@@ -2,10 +2,11 @@
 name = "herdr-comments"
 version = "0.1.0"
 edition = "2021"
-description = "Collect and review comments on copied Herdr terminal text"
+description = "Select and comment on frozen Herdr pane history"
 license = "MIT"
 
 [dependencies]
+ansi-to-tui = "8.0.1"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
@@ -27,4 +28,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "herdr-comments"
 path = "src/main.rs"
-

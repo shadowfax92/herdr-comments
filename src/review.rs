@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use crate::annotation::ReviewTarget;
 use crate::format::{format_collection, format_comment, validate_review};
 use crate::herdr::HerdrClient;
 use crate::model::ReviewSession;
@@ -31,9 +32,9 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
         Self { store, herdr }
     }
 
-    pub fn start(&self, pane_id: &str, scope: &str) -> Result<ReviewStart> {
+    pub fn start(&self, target: &ReviewTarget) -> Result<ReviewStart> {
         self.store.cleanup_transients()?;
-        let comments = self.store.list_comments(scope)?;
+        let comments = self.store.list_comments(&target.scope)?;
         if comments.is_empty() {
             let _ = self
                 .herdr
@@ -47,12 +48,17 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
             .collect::<Result<Vec<_>>>()?;
         let comment_ids = comments.iter().map(|comment| comment.id.clone()).collect();
         let review = self.store.create_review(
-            pane_id,
-            scope,
+            &target.pane_id,
+            &target.scope,
             comment_ids,
             &format_collection(&formatted),
+            target.annotation_run_id.clone(),
+            target.overlay_pane_id.clone(),
         )?;
-        self.herdr.open_review(&review.id)?;
+        if let Err(error) = self.herdr.open_review(&review.id) {
+            let _ = self.store.delete_review(&review.id);
+            return Err(error);
+        }
         Ok(ReviewStart::Opened(review))
     }
 
@@ -74,13 +80,23 @@ impl<'a, H: HerdrClient> ReviewService<'a, H> {
             return Ok(ReviewResult::Cancelled);
         }
 
-        self.herdr.send_text(&review.pane_id, &markdown)?;
+        self.herdr.send_input(&review.pane_id, &markdown)?;
         self.store
             .delete_comments(&review.scope, &review.comment_ids)
             .context("comments were inserted, but cleanup failed; do not retry this review")?;
         self.store
             .delete_review(review_id)
             .context("comments were inserted, but cleanup failed; do not retry this review")?;
+        if let Some(overlay_pane_id) = review.overlay_pane_id.as_deref() {
+            self.herdr
+                .close_plugin_pane(overlay_pane_id)
+                .context("comments were inserted, but the annotation view could not close")?;
+        }
+        if let Some(run_id) = review.annotation_run_id.as_deref() {
+            self.store
+                .delete_annotation(run_id)
+                .context("comments were inserted, but annotation cleanup failed")?;
+        }
         let _ = self.herdr.notify(
             "Herdr Comments",
             &format!(

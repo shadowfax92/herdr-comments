@@ -1,7 +1,8 @@
 use std::os::unix::fs::{symlink, PermissionsExt};
 
-use herdr_comments::format::{format_collection, format_comment, preview_lines};
-use herdr_comments::store::{scope_id, Store};
+use herdr_comments::format::{format_collection, format_comment};
+use herdr_comments::model::PaneSnapshot;
+use herdr_comments::store::{scope_id, session_key, Store};
 use tempfile::tempdir;
 
 #[test]
@@ -13,22 +14,6 @@ fn comments_format_as_quote_then_note_in_capture_order() {
     assert_eq!(
         format_collection(&[first, second]),
         "> first\n> second\n\nbecause one\n\n> third\n\nbecause two\n"
-    );
-}
-
-#[test]
-fn preview_is_bounded_and_marks_truncation() {
-    let preview = preview_lines("one\ntwo\nthree\nfour\nfive", 4, 2_000);
-
-    assert_eq!(
-        preview,
-        vec![
-            "> one",
-            "> two",
-            "> three",
-            "> four",
-            "> ... preview truncated"
-        ]
     );
 }
 
@@ -107,20 +92,46 @@ fn symlink_roots_and_invalid_ids_are_rejected() {
     assert!(Store::open(&linked).is_err());
 
     let store = Store::open(temp.path().join("state")).unwrap();
-    assert!(store.load_draft("../outside").is_err());
+    assert!(store.load_annotation("../outside").is_err());
 }
 
 #[test]
-fn drafts_keep_originating_context_and_use_opaque_ids() {
+fn annotation_runs_keep_private_snapshot_context_and_use_opaque_ids() {
     let temp = tempdir().unwrap();
     let store = Store::open(temp.path().join("state")).unwrap();
     let scope = scope_id("socket", "w4:p7");
-    let draft = store.create_draft("copied text", "w4:p7", &scope).unwrap();
-    let loaded = store.load_draft(&draft.id).unwrap();
+    let snapshot = PaneSnapshot {
+        text: "captured pane".into(),
+        ansi: "\u{1b}[31mcaptured pane\u{1b}[0m".into(),
+        initial_top: 0,
+        viewport_rows: 1,
+        history_limited: false,
+    };
+    let run = store
+        .create_annotation("w4:p7", &scope, &session_key("socket"), snapshot.clone())
+        .unwrap();
+    let loaded = store.load_annotation(&run.id).unwrap();
 
-    assert_eq!(loaded.source_text, "copied text");
+    assert_eq!(loaded.snapshot, snapshot);
     assert_eq!(loaded.pane_id, "w4:p7");
     assert_eq!(loaded.scope, scope);
     assert_eq!(loaded.id.len(), 32);
     assert!(loaded.id.chars().all(|ch| ch.is_ascii_hexdigit()));
+}
+
+#[test]
+fn comments_accept_safe_multiline_notes() {
+    let temp = tempdir().unwrap();
+    let store = Store::open(temp.path().join("state")).unwrap();
+    let scope = scope_id("socket", "w1:p1");
+
+    let comment = store
+        .add_comment(&scope, "selected", "first line\nsecond line")
+        .unwrap();
+
+    assert_eq!(comment.note, "first line\nsecond line");
+    assert_eq!(
+        format_comment(&comment.source_text, &comment.note).unwrap(),
+        "> selected\n\nfirst line\nsecond line\n"
+    );
 }

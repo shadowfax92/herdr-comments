@@ -43,5 +43,8 @@ fn notify_error(error: &anyhow::Error) {
     let Some(bin) = std::env::var_os("HERDR_BIN_PATH") else {
         return;
     };
-    let _ = CliHerdr::new(bin).notify("Herdr Comments", &error.to_string());
+    let Some(socket_path) = std::env::var_os("HERDR_SOCKET_PATH") else {
+        return;
+    };
+    let _ = CliHerdr::new(bin, socket_path).notify("Herdr Comments", &error.to_string());
 }

@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::format::{normalize_note, normalize_source};
-use crate::model::{Comment, Draft, ReviewSession, SCHEMA_VERSION};
+use crate::model::{
+    ActiveAnnotation, AnnotationRun, Comment, PaneSnapshot, ReviewSession, SCHEMA_VERSION,
+};
 
 const TRANSIENT_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 
@@ -24,53 +26,122 @@ impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         ensure_private_dir(&root)?;
-        for name in ["drafts", "collections", "reviews"] {
+        for name in ["active", "runs", "collections", "reviews"] {
             ensure_private_dir(&root.join(name))?;
         }
         Ok(Self { root })
     }
 
-    pub fn create_draft(&self, source_text: &str, pane_id: &str, scope: &str) -> Result<Draft> {
-        self.create_draft_at(source_text, pane_id, scope, now_ms())
-    }
-
-    fn create_draft_at(
+    pub fn create_annotation(
         &self,
-        source_text: &str,
         pane_id: &str,
         scope: &str,
+        session_key: &str,
+        snapshot: PaneSnapshot,
+    ) -> Result<AnnotationRun> {
+        self.create_annotation_at(pane_id, scope, session_key, snapshot, now_ms())
+    }
+
+    fn create_annotation_at(
+        &self,
+        pane_id: &str,
+        scope: &str,
+        session_key: &str,
+        snapshot: PaneSnapshot,
         created_at_ms: u64,
-    ) -> Result<Draft> {
-        let source_text = normalize_source(source_text)?;
-        if pane_id.trim().is_empty() || !valid_scope(scope) {
-            bail!("draft context is invalid");
-        }
-        let draft = Draft {
+    ) -> Result<AnnotationRun> {
+        validate_pane_id(pane_id)?;
+        validate_scope(scope)?;
+        validate_scope(session_key)?;
+        let run = AnnotationRun {
             schema_version: SCHEMA_VERSION,
             id: new_id(),
-            source_text,
             pane_id: pane_id.to_owned(),
             scope: scope.to_owned(),
+            session_key: session_key.to_owned(),
+            snapshot,
+            overlay_pane_id: None,
             created_at_ms,
         };
-        atomic_json(&self.draft_path(&draft.id)?, &draft)?;
-        Ok(draft)
+        atomic_json(&self.annotation_path(&run.id)?, &run)?;
+        Ok(run)
     }
 
-    pub fn load_draft(&self, id: &str) -> Result<Draft> {
-        let draft: Draft = read_json(&self.draft_path(id)?)?;
-        validate_model(&draft.id, id, draft.schema_version)?;
-        Ok(draft)
+    pub fn load_annotation(&self, id: &str) -> Result<AnnotationRun> {
+        let run: AnnotationRun = read_json(&self.annotation_path(id)?)?;
+        validate_model(&run.id, id, run.schema_version)?;
+        validate_pane_id(&run.pane_id)?;
+        validate_scope(&run.scope)?;
+        validate_scope(&run.session_key)?;
+        Ok(run)
     }
 
-    pub fn delete_draft(&self, id: &str) -> Result<()> {
-        remove_private_file(&self.draft_path(id)?)
+    pub fn attach_annotation(&self, id: &str, overlay_pane_id: &str) -> Result<AnnotationRun> {
+        validate_pane_id(overlay_pane_id)?;
+        let mut run = self.load_annotation(id)?;
+        run.overlay_pane_id = Some(overlay_pane_id.to_owned());
+        atomic_json(&self.annotation_path(id)?, &run)?;
+        let active = ActiveAnnotation {
+            schema_version: SCHEMA_VERSION,
+            run_id: id.to_owned(),
+            overlay_pane_id: overlay_pane_id.to_owned(),
+        };
+        atomic_json(&self.active_annotation_path(&run.session_key)?, &active)?;
+        Ok(run)
+    }
+
+    pub fn active_annotation(&self, session_key: &str) -> Result<Option<ActiveAnnotation>> {
+        let path = self.active_annotation_path(session_key)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let active: ActiveAnnotation = read_json(&path)?;
+        if active.schema_version != SCHEMA_VERSION {
+            bail!("active annotation has an unsupported schema");
+        }
+        validate_id(&active.run_id)?;
+        validate_pane_id(&active.overlay_pane_id)?;
+        Ok(Some(active))
+    }
+
+    pub fn annotation_for_overlay(
+        &self,
+        session_key: &str,
+        pane_id: &str,
+    ) -> Result<Option<AnnotationRun>> {
+        let Some(active) = self.active_annotation(session_key)? else {
+            return Ok(None);
+        };
+        if active.overlay_pane_id != pane_id {
+            return Ok(None);
+        }
+        let run = self.load_annotation(&active.run_id)?;
+        if run.session_key != session_key || run.overlay_pane_id.as_deref() != Some(pane_id) {
+            bail!("active annotation points to a different overlay");
+        }
+        Ok(Some(run))
+    }
+
+    pub fn delete_annotation(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        if let Ok(run) = self.load_annotation(id) {
+            if self
+                .active_annotation(&run.session_key)?
+                .is_some_and(|active| active.run_id == id)
+            {
+                remove_private_file(&self.active_annotation_path(&run.session_key)?)?;
+            }
+        }
+        remove_private_file(&self.annotation_path(id)?)
+    }
+
+    pub fn annotation_path(&self, id: &str) -> Result<PathBuf> {
+        validate_id(id)?;
+        Ok(self.root.join("runs").join(format!("{id}.json")))
     }
 
     pub fn add_comment(&self, scope: &str, source_text: &str, note: &str) -> Result<Comment> {
-        if !valid_scope(scope) {
-            bail!("comment scope is invalid");
-        }
+        validate_scope(scope)?;
         let comment = Comment {
             schema_version: SCHEMA_VERSION,
             id: new_id(),
@@ -133,12 +204,22 @@ impl Store {
         scope: &str,
         comment_ids: Vec<String>,
         markdown: &str,
+        annotation_run_id: Option<String>,
+        overlay_pane_id: Option<String>,
     ) -> Result<ReviewSession> {
-        if pane_id.trim().is_empty() || !valid_scope(scope) || comment_ids.is_empty() {
+        validate_pane_id(pane_id)?;
+        validate_scope(scope)?;
+        if comment_ids.is_empty() {
             bail!("review context is invalid");
         }
         for id in &comment_ids {
             validate_id(id)?;
+        }
+        if let Some(id) = annotation_run_id.as_deref() {
+            validate_id(id)?;
+        }
+        if let Some(id) = overlay_pane_id.as_deref() {
+            validate_pane_id(id)?;
         }
         let review = ReviewSession {
             schema_version: SCHEMA_VERSION,
@@ -146,6 +227,8 @@ impl Store {
             pane_id: pane_id.to_owned(),
             scope: scope.to_owned(),
             comment_ids,
+            annotation_run_id,
+            overlay_pane_id,
             created_at_ms: now_ms(),
         };
         atomic_json(&self.review_json_path(&review.id)?, &review)?;
@@ -194,14 +277,14 @@ impl Store {
 
     fn cleanup_transients_at(&self, now: u64) -> Result<usize> {
         let mut removed = 0;
-        for entry in fs::read_dir(self.root.join("drafts"))? {
+        for entry in fs::read_dir(self.root.join("runs"))? {
             let entry = entry?;
             let Some(id) = json_id(&entry.path()) else {
                 continue;
             };
-            let draft: Draft = read_json(&entry.path())?;
-            if now.saturating_sub(draft.created_at_ms) > TRANSIENT_TTL_MS {
-                self.delete_draft(&id)?;
+            let run: AnnotationRun = read_json(&entry.path())?;
+            if now.saturating_sub(run.created_at_ms) > TRANSIENT_TTL_MS {
+                self.delete_annotation(&id)?;
                 removed += 1;
             }
         }
@@ -219,15 +302,13 @@ impl Store {
         Ok(removed)
     }
 
-    fn draft_path(&self, id: &str) -> Result<PathBuf> {
-        validate_id(id)?;
-        Ok(self.root.join("drafts").join(format!("{id}.json")))
+    fn active_annotation_path(&self, session_key: &str) -> Result<PathBuf> {
+        validate_scope(session_key)?;
+        Ok(self.root.join("active").join(format!("{session_key}.json")))
     }
 
     fn collection_dir(&self, scope: &str) -> Result<PathBuf> {
-        if !valid_scope(scope) {
-            bail!("comment scope is invalid");
-        }
+        validate_scope(scope)?;
         Ok(self.root.join("collections").join(scope))
     }
 
@@ -250,6 +331,12 @@ pub fn scope_id(session_identity: &str, pane_id: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+pub fn session_key(session_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(session_identity.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn ensure_private_dir(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -268,22 +355,15 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
 }
 
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let bytes = serde_json::to_vec(value)?;
-    atomic_bytes(path, &bytes)
+    atomic_bytes(path, &serde_json::to_vec(value)?)
 }
 
 fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if path
-        .parent()
-        .is_none_or(|parent| fs::symlink_metadata(parent).is_err())
-    {
-        bail!("state parent directory is unavailable");
-    }
+    let parent = path.parent().context("state file has no parent")?;
+    ensure_private_dir(parent)?;
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         bail!("refusing symbolic-link state file {}", path.display());
     }
-    let parent = path.parent().context("state file has no parent")?;
-    ensure_private_dir(parent)?;
     let temporary = parent.join(format!(".{}.tmp", new_id()));
     let write_result = (|| -> Result<()> {
         let mut file = OpenOptions::new()
@@ -339,12 +419,22 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn valid_id(id: &str) -> bool {
-    id.len() == 32 && id.chars().all(|ch| ch.is_ascii_hexdigit())
+fn validate_scope(scope: &str) -> Result<()> {
+    if scope.len() != 64 || !scope.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("comment scope is invalid");
+    }
+    Ok(())
 }
 
-fn valid_scope(scope: &str) -> bool {
-    scope.len() == 64 && scope.chars().all(|ch| ch.is_ascii_hexdigit())
+fn validate_pane_id(pane_id: &str) -> Result<()> {
+    if pane_id.trim().is_empty() || pane_id.chars().any(char::is_control) {
+        bail!("pane identifier is invalid");
+    }
+    Ok(())
+}
+
+fn valid_id(id: &str) -> bool {
+    id.len() == 32 && id.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn json_id(path: &Path) -> Option<String> {
@@ -381,19 +471,29 @@ mod tests {
 
     use super::*;
 
+    fn snapshot() -> PaneSnapshot {
+        PaneSnapshot {
+            text: "one\ntwo".into(),
+            ansi: "one\ntwo".into(),
+            initial_top: 0,
+            viewport_rows: 2,
+            history_limited: false,
+        }
+    }
+
     #[test]
     fn expired_transients_are_removed_but_comments_remain() {
         let temp = tempdir().unwrap();
         let store = Store::open(temp.path().join("state")).unwrap();
         let scope = scope_id("socket", "w1:p1");
         let old = now_ms().saturating_sub(TRANSIENT_TTL_MS + 1);
-        let draft = store
-            .create_draft_at("source", "w1:p1", &scope, old)
+        let run = store
+            .create_annotation_at("w1:p1", &scope, &session_key("socket"), snapshot(), old)
             .unwrap();
         store.add_comment(&scope, "source", "note").unwrap();
 
         assert_eq!(store.cleanup_transients_at(now_ms()).unwrap(), 1);
-        assert!(store.load_draft(&draft.id).is_err());
+        assert!(store.load_annotation(&run.id).is_err());
         assert_eq!(store.list_comments(&scope).unwrap().len(), 1);
     }
 }

@@ -1,9 +1,11 @@
 use std::sync::Mutex;
 
 use anyhow::{bail, Result};
-use herdr_comments::herdr::HerdrClient;
+use herdr_comments::annotation::ReviewTarget;
+use herdr_comments::herdr::{ClosePaneResult, HerdrClient};
+use herdr_comments::model::PaneSnapshot;
 use herdr_comments::review::{ReviewResult, ReviewService, ReviewStart};
-use herdr_comments::store::{scope_id, Store};
+use herdr_comments::store::{scope_id, session_key, Store};
 use tempfile::tempdir;
 
 #[derive(Default)]
@@ -11,12 +13,22 @@ struct RecordingHerdr {
     opened: Mutex<Vec<String>>,
     sent: Mutex<Vec<(String, String)>>,
     notifications: Mutex<Vec<(String, String)>>,
+    closed: Mutex<Vec<String>>,
     fail_send: Mutex<bool>,
 }
 
 impl HerdrClient for RecordingHerdr {
-    fn open_capture(&self, _draft_id: &str) -> Result<()> {
-        Ok(())
+    fn capture_snapshot(&self, _pane_id: &str) -> Result<PaneSnapshot> {
+        unreachable!()
+    }
+
+    fn open_annotation(&self, _run_id: &str) -> Result<String> {
+        unreachable!()
+    }
+
+    fn close_plugin_pane(&self, pane_id: &str) -> Result<ClosePaneResult> {
+        self.closed.lock().unwrap().push(pane_id.to_owned());
+        Ok(ClosePaneResult::Closed)
     }
 
     fn open_review(&self, review_id: &str) -> Result<()> {
@@ -24,7 +36,7 @@ impl HerdrClient for RecordingHerdr {
         Ok(())
     }
 
-    fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
+    fn send_input(&self, pane_id: &str, text: &str) -> Result<()> {
         if *self.fail_send.lock().unwrap() {
             bail!("injected send failure");
         }
@@ -44,6 +56,15 @@ impl HerdrClient for RecordingHerdr {
     }
 }
 
+fn target(scope: &str) -> ReviewTarget {
+    ReviewTarget {
+        pane_id: "w1:p1".into(),
+        scope: scope.into(),
+        annotation_run_id: None,
+        overlay_pane_id: None,
+    }
+}
+
 #[test]
 fn empty_collection_notifies_without_opening() {
     let temp = tempdir().unwrap();
@@ -52,7 +73,7 @@ fn empty_collection_notifies_without_opening() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
 
-    assert_eq!(service.start("w1:p1", &scope).unwrap(), ReviewStart::Empty);
+    assert_eq!(service.start(&target(&scope)).unwrap(), ReviewStart::Empty);
     assert!(herdr.opened.lock().unwrap().is_empty());
     assert!(herdr.notifications.lock().unwrap()[0]
         .1
@@ -69,7 +90,7 @@ fn review_opens_an_exact_markdown_snapshot_with_an_opaque_id() {
     store.add_comment(&scope, "first", "note one").unwrap();
     store.add_comment(&scope, "second", "note two").unwrap();
 
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
 
@@ -93,7 +114,7 @@ fn saved_review_inserts_exact_edits_and_clears_the_snapshot() {
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note one").unwrap();
     store.add_comment(&scope, "second", "note two").unwrap();
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
     let edited = "> second\n\nrevised\n\n> first\n\nnote one\n";
@@ -119,7 +140,7 @@ fn quitting_without_write_cancels_and_preserves_collection() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
 
@@ -140,7 +161,7 @@ fn saved_blank_review_preserves_collection_without_inserting() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
     std::fs::write(store.review_markdown_path(&review.id).unwrap(), "\n").unwrap();
@@ -162,7 +183,7 @@ fn send_failure_retains_review_and_collection_for_retry() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
     store.confirm_review(&review.id).unwrap();
@@ -181,7 +202,7 @@ fn successful_review_deletes_only_the_snapshotted_comments() {
     let service = ReviewService::new(&store, &herdr);
     let scope = scope_id("socket", "w1:p1");
     store.add_comment(&scope, "first", "note").unwrap();
-    let ReviewStart::Opened(review) = service.start("w1:p1", &scope).unwrap() else {
+    let ReviewStart::Opened(review) = service.start(&target(&scope)).unwrap() else {
         panic!("expected an open review");
     };
     let later = store.add_comment(&scope, "later", "keep me").unwrap();
@@ -192,4 +213,48 @@ fn successful_review_deletes_only_the_snapshotted_comments() {
     let remaining = store.list_comments(&scope).unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, later.id);
+}
+
+#[test]
+fn successful_overlay_review_closes_the_view_and_clears_its_run() {
+    let temp = tempdir().unwrap();
+    let store = Store::open(temp.path().join("state")).unwrap();
+    let herdr = RecordingHerdr::default();
+    let service = ReviewService::new(&store, &herdr);
+    let scope = scope_id("socket", "w1:p1");
+    let run = store
+        .create_annotation(
+            "w1:p1",
+            &scope,
+            &session_key("socket"),
+            PaneSnapshot {
+                text: "source".into(),
+                ansi: "source".into(),
+                initial_top: 0,
+                viewport_rows: 1,
+                history_limited: false,
+            },
+        )
+        .unwrap();
+    let run = store.attach_annotation(&run.id, "w1:p9").unwrap();
+    store.add_comment(&scope, "source", "note").unwrap();
+    let target = ReviewTarget {
+        pane_id: run.pane_id.clone(),
+        scope: run.scope.clone(),
+        annotation_run_id: Some(run.id.clone()),
+        overlay_pane_id: run.overlay_pane_id.clone(),
+    };
+    let ReviewStart::Opened(review) = service.start(&target).unwrap() else {
+        panic!("expected an open review");
+    };
+    store.confirm_review(&review.id).unwrap();
+
+    service.complete(&review.id).unwrap();
+
+    assert_eq!(herdr.closed.lock().unwrap().as_slice(), ["w1:p9"]);
+    assert!(store.load_annotation(&run.id).is_err());
+    assert!(store
+        .active_annotation(&session_key("socket"))
+        .unwrap()
+        .is_none());
 }

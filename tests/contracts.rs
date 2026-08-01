@@ -1,9 +1,15 @@
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use std::thread;
 
 use herdr_comments::context::ActionContext;
 use herdr_comments::herdr::{
-    capture_popup_args, classify_failure, review_popup_args, send_text_args, FailureKind,
+    annotation_overlay_args, classify_failure, pane_read_args, pane_send_input_request,
+    review_popup_args, CliHerdr, FailureKind, HerdrClient,
 };
+use serde_json::Value;
+use tempfile::tempdir;
 
 #[test]
 fn action_context_reads_the_originating_pane_and_runtime_paths() {
@@ -35,16 +41,17 @@ fn action_context_rejects_missing_required_values() {
 }
 
 #[test]
-fn popup_arguments_expose_only_the_opaque_id() {
-    let capture = capture_popup_args("abc123");
+fn plugin_panes_expose_only_opaque_state_ids() {
+    let capture = annotation_overlay_args("abc123");
     let review = review_popup_args("def456");
 
     assert_eq!(capture[0..3], ["plugin", "pane", "open"]);
-    assert!(capture.windows(2).any(|pair| pair == ["--width", "48%"]));
-    assert!(capture.windows(2).any(|pair| pair == ["--height", "30%"]));
+    assert!(capture
+        .windows(2)
+        .any(|pair| pair == ["--placement", "overlay"]));
     assert!(capture
         .iter()
-        .any(|arg| arg == "HERDR_COMMENTS_DRAFT_ID=abc123"));
+        .any(|arg| arg == "HERDR_COMMENTS_RUN_ID=abc123"));
     assert!(review.windows(2).any(|pair| pair == ["--width", "90%"]));
     assert!(review.windows(2).any(|pair| pair == ["--height", "85%"]));
     assert!(review
@@ -53,11 +60,59 @@ fn popup_arguments_expose_only_the_opaque_id() {
 }
 
 #[test]
-fn pane_text_is_inserted_without_enter() {
-    let args = send_text_args("w1:p2", "hello");
+fn pane_capture_requests_rendered_history_without_unwrapping() {
+    assert_eq!(
+        pane_read_args("w1:p2", "recent", "ansi", Some(1_000)),
+        ["pane", "read", "w1:p2", "--source", "recent", "--format", "ansi", "--lines", "1000"]
+    );
+}
 
-    assert_eq!(args, ["pane", "send-text", "w1:p2", "hello"]);
-    assert!(!args.iter().any(|arg| arg == "enter" || arg == "run"));
+#[test]
+fn pane_input_uses_the_bracketed_paste_endpoint_without_enter() {
+    let request: Value =
+        serde_json::from_str(&pane_send_input_request("req-1", "w1:p2", "first\nsecond").unwrap())
+            .unwrap();
+
+    assert_eq!(request["method"], "pane.send_input");
+    assert_eq!(request["params"]["pane_id"], "w1:p2");
+    assert_eq!(request["params"]["text"], "first\nsecond");
+    assert_eq!(request["params"]["keys"], Value::Array(Vec::new()));
+}
+
+#[test]
+fn pane_input_rejects_a_request_larger_than_herdr_accepts() {
+    let text = "a".repeat(1024 * 1024);
+
+    assert!(pane_send_input_request("req-1", "w1:p2", &text).is_err());
+}
+
+#[test]
+fn pane_input_uses_one_request_and_one_response_on_the_runtime_socket() {
+    let temp = tempdir().unwrap();
+    let socket_path = temp.path().join("herdr.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let response = serde_json::json!({
+            "id": request["id"],
+            "result": {"type": "ok"}
+        });
+        writeln!(reader.get_mut(), "{response}").unwrap();
+        (line, request)
+    });
+
+    CliHerdr::new("/unused/herdr", &socket_path)
+        .send_input("w1:p2", "first\nsecond")
+        .unwrap();
+    let (line, request) = server.join().unwrap();
+
+    assert_eq!(line.matches('\n').count(), 1);
+    assert_eq!(request["method"], "pane.send_input");
+    assert_eq!(request["params"]["keys"], Value::Array(Vec::new()));
 }
 
 #[test]
@@ -76,5 +131,6 @@ fn manifest_declares_the_public_contract() {
     assert!(manifest.contains("platforms = [\"macos\"]"));
     assert!(manifest.contains("id = \"capture\""));
     assert!(manifest.contains("id = \"review\""));
+    assert!(manifest.contains("placement = \"overlay\""));
     assert!(manifest.contains("placement = \"popup\""));
 }
