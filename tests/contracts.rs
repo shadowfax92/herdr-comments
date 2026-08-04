@@ -7,8 +7,8 @@ use std::thread;
 use herdr_comments::config::PopupSize;
 use herdr_comments::context::ActionContext;
 use herdr_comments::herdr::{
-    annotation_popup_args, classify_failure, pane_layout_args, pane_read_args,
-    pane_send_input_request, review_popup_args, CliHerdr, FailureKind, HerdrClient,
+    annotation_popup_args, classify_failure, inline_annotation_popup_args, pane_layout_args,
+    pane_read_args, pane_send_input_request, review_popup_args, CliHerdr, FailureKind, HerdrClient,
 };
 use serde_json::Value;
 use tempfile::tempdir;
@@ -16,7 +16,7 @@ use tempfile::tempdir;
 #[test]
 fn action_context_reads_the_originating_pane_and_runtime_paths() {
     let context = ActionContext::from_values(
-        r#"{"focused_pane_id":"w2:p3","focused_pane_cwd":"/tmp/project"}"#,
+        r#"{"focused_pane_id":"w2:p3","focused_pane_cwd":"/tmp/project","selected_text":"first\nsecond"}"#,
         "/tmp/comments-state",
         "/opt/bin/herdr",
         "/tmp/herdr.sock",
@@ -25,6 +25,7 @@ fn action_context_reads_the_originating_pane_and_runtime_paths() {
 
     assert_eq!(context.pane_id, "w2:p3");
     assert_eq!(context.pane_cwd, Some(PathBuf::from("/tmp/project")));
+    assert_eq!(context.selected_text.as_deref(), Some("first\nsecond"));
     assert_eq!(context.state_dir, PathBuf::from("/tmp/comments-state"));
     assert_eq!(context.herdr_bin, PathBuf::from("/opt/bin/herdr"));
     assert_eq!(context.session_identity, "/tmp/herdr.sock");
@@ -73,6 +74,24 @@ fn plugin_panes_expose_only_opaque_state_ids() {
     assert!(review
         .iter()
         .any(|arg| arg == "HERDR_COMMENTS_REVIEW_ID=def456"));
+}
+
+#[test]
+fn inline_annotation_popup_marks_the_existing_capture_entrypoint() {
+    let args = inline_annotation_popup_args(
+        "abc123",
+        &PopupSize {
+            width: "70%".into(),
+            height: "90%".into(),
+        },
+    );
+
+    assert_eq!(args[0..3], ["plugin", "pane", "open"]);
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["--entrypoint", "capture"]));
+    assert!(args.iter().any(|arg| arg == "HERDR_COMMENTS_RUN_ID=abc123"));
+    assert!(args.iter().any(|arg| arg == "HERDR_COMMENTS_INLINE=1"));
 }
 
 #[test]
@@ -191,6 +210,7 @@ fn manifest_declares_the_public_contract() {
     assert!(manifest.contains("min_herdr_version = \"0.7.5\""));
     assert!(manifest.contains("platforms = [\"macos\"]"));
     assert!(manifest.contains("id = \"capture\""));
+    assert!(manifest.contains("contexts = [\"pane\", \"selection\"]"));
     assert!(manifest.contains("id = \"review\""));
     assert!(manifest.contains("id = \"paste\""));
     assert!(manifest.contains("placement = \"popup\""));

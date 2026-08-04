@@ -7,12 +7,14 @@ use serde::Deserialize;
 struct PluginContext {
     focused_pane_id: Option<String>,
     focused_pane_cwd: Option<String>,
+    selected_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionContext {
     pub pane_id: String,
     pub pane_cwd: Option<PathBuf>,
+    pub selected_text: Option<String>,
     pub state_dir: PathBuf,
     pub herdr_bin: PathBuf,
     pub session_identity: String,
@@ -49,6 +51,7 @@ impl ActionContext {
                 .focused_pane_cwd
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from),
+            selected_text: parsed.selected_text,
             state_dir: PathBuf::from(state_dir),
             herdr_bin: PathBuf::from(herdr_bin),
             session_identity,

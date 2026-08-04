@@ -12,6 +12,7 @@ use tempfile::tempdir;
 struct RecordingHerdr {
     snapshot: PaneSnapshot,
     opened: Mutex<Vec<String>>,
+    opened_inline: Mutex<Vec<String>>,
     fail_open: Mutex<bool>,
 }
 
@@ -26,6 +27,7 @@ impl RecordingHerdr {
                 history_limited: false,
             },
             opened: Mutex::new(Vec::new()),
+            opened_inline: Mutex::new(Vec::new()),
             fail_open: Mutex::new(false),
         }
     }
@@ -41,6 +43,11 @@ impl HerdrClient for RecordingHerdr {
             bail!("injected open failure");
         }
         self.opened.lock().unwrap().push(run_id.to_owned());
+        Ok(())
+    }
+
+    fn open_inline_annotation(&self, run_id: &str, _popup: &PopupSize) -> Result<()> {
+        self.opened_inline.lock().unwrap().push(run_id.to_owned());
         Ok(())
     }
 

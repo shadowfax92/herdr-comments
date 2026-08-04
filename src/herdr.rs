@@ -26,6 +26,7 @@ pub enum FailureKind {
 pub trait HerdrClient {
     fn capture_snapshot(&self, pane_id: &str) -> Result<PaneSnapshot>;
     fn open_annotation(&self, run_id: &str, popup: &PopupSize) -> Result<()>;
+    fn open_inline_annotation(&self, run_id: &str, popup: &PopupSize) -> Result<()>;
     fn open_review(&self, review_id: &str, popup: &PopupSize) -> Result<()>;
     fn send_input(&self, pane_id: &str, text: &str) -> Result<()>;
     fn notify(&self, title: &str, body: &str) -> Result<()>;
@@ -134,6 +135,14 @@ impl HerdrClient for CliHerdr {
         Ok(())
     }
 
+    fn open_inline_annotation(&self, run_id: &str, popup: &PopupSize) -> Result<()> {
+        self.run(
+            &inline_annotation_popup_args(run_id, popup),
+            "open the inline comment popup",
+        )?;
+        Ok(())
+    }
+
     fn open_review(&self, review_id: &str, popup: &PopupSize) -> Result<()> {
         self.run(
             &review_popup_args(review_id, popup),
@@ -153,7 +162,15 @@ impl HerdrClient for CliHerdr {
 }
 
 pub fn annotation_popup_args(run_id: &str, popup: &PopupSize) -> Vec<String> {
-    vec![
+    annotation_popup_args_with_mode(run_id, popup, false)
+}
+
+pub fn inline_annotation_popup_args(run_id: &str, popup: &PopupSize) -> Vec<String> {
+    annotation_popup_args_with_mode(run_id, popup, true)
+}
+
+fn annotation_popup_args_with_mode(run_id: &str, popup: &PopupSize, inline: bool) -> Vec<String> {
+    let mut args = vec![
         "plugin".into(),
         "pane".into(),
         "open".into(),
@@ -169,8 +186,13 @@ pub fn annotation_popup_args(run_id: &str, popup: &PopupSize) -> Vec<String> {
         popup.height.clone(),
         "--env".into(),
         format!("HERDR_COMMENTS_RUN_ID={run_id}"),
-        "--focus".into(),
-    ]
+    ];
+    if inline {
+        args.push("--env".into());
+        args.push("HERDR_COMMENTS_INLINE=1".into());
+    }
+    args.push("--focus".into());
+    args
 }
 
 pub fn review_popup_args(review_id: &str, popup: &PopupSize) -> Vec<String> {
