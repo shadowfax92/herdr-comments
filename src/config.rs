@@ -17,6 +17,8 @@ pub struct LoadedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    inline_comments: bool,
     popups: BTreeMap<String, PopupSize>,
     #[serde(default)]
     profiles: Vec<Profile>,
@@ -71,6 +73,10 @@ impl LoadedConfig {
 
     pub fn popup(&self, name: &str, client_width: Option<u16>) -> Result<PopupSize> {
         self.config.popup(name, client_width)
+    }
+
+    pub fn inline_comments(&self) -> bool {
+        self.config.inline_comments
     }
 }
 
@@ -182,6 +188,17 @@ mod tests {
 
     fn config() -> Config {
         Config::parse(DEFAULT_CONFIG).unwrap()
+    }
+
+    #[test]
+    fn inline_comments_are_opt_in_and_legacy_configs_stay_disabled() {
+        assert!(!config().inline_comments);
+
+        let legacy = DEFAULT_CONFIG.replacen("inline_comments: false\n\n", "", 1);
+        assert!(!Config::parse(&legacy).unwrap().inline_comments);
+
+        let enabled = DEFAULT_CONFIG.replacen("inline_comments: false", "inline_comments: true", 1);
+        assert!(Config::parse(&enabled).unwrap().inline_comments);
     }
 
     #[test]

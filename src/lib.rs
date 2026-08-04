@@ -23,11 +23,20 @@ pub fn capture_action() -> Result<()> {
     let store = Store::open(&context.state_dir)?;
     let herdr = CliHerdr::new(&context.herdr_bin, &context.session_identity);
     let scope = store::scope_id(&context.session_identity, &context.pane_id);
-    let popup =
-        LoadedConfig::load()?.popup(CAPTURE_POPUP, herdr.client_width(&context.pane_id).ok())?;
-    AnnotationService::new(&store, &herdr)
-        .start(&context.pane_id, &scope, &popup)
-        .map(|_| ())
+    let config = LoadedConfig::load()?;
+    let popup = config.popup(CAPTURE_POPUP, herdr.client_width(&context.pane_id).ok())?;
+    let service = AnnotationService::new(&store, &herdr);
+    if config.inline_comments() {
+        let selected_text = context
+            .selected_text
+            .as_deref()
+            .context("inline comments require a selection in Herdr Copy mode")?;
+        service
+            .start_inline(&context.pane_id, &scope, selected_text, &popup)
+            .map(|_| ())
+    } else {
+        service.start(&context.pane_id, &scope, &popup).map(|_| ())
+    }
 }
 
 pub fn capture_popup() -> Result<()> {
@@ -36,7 +45,11 @@ pub fn capture_popup() -> Result<()> {
     let state_dir =
         std::env::var("HERDR_PLUGIN_STATE_DIR").context("HERDR_PLUGIN_STATE_DIR is missing")?;
     let store = Store::open(state_dir)?;
-    tui::run_annotation(&store, &run_id)
+    if std::env::var("HERDR_COMMENTS_INLINE").is_ok_and(|value| value == "1") {
+        tui::run_inline_annotation(&store, &run_id)
+    } else {
+        tui::run_annotation(&store, &run_id)
+    }
 }
 
 pub fn review_action() -> Result<()> {

@@ -1,3 +1,5 @@
+inline_comments: false
+
 popups:
   capture: { width: "90%", height: "90%" }
   review: { width: "90%", height: "85%" }

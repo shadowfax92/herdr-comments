@@ -26,6 +26,10 @@ impl HerdrClient for RecordingHerdr {
         unreachable!()
     }
 
+    fn open_inline_annotation(&self, _run_id: &str, _popup: &PopupSize) -> Result<()> {
+        unreachable!()
+    }
+
     fn open_review(&self, review_id: &str, _popup: &PopupSize) -> Result<()> {
         self.opened.lock().unwrap().push(review_id.to_owned());
         Ok(())

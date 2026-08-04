@@ -12,7 +12,7 @@ command = ["cargo", "build", "--release"]
 id = "capture"
 title = "Annotate pane history"
 description = "Open a frozen, scrollable annotation view for the focused pane."
-contexts = ["pane"]
+contexts = ["pane", "selection"]
 command = ["./target/release/herdr-comments", "capture"]
 
 [[actions]]
