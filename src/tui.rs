@@ -63,6 +63,7 @@ pub struct AnnotationState {
     viewport_height: usize,
     viewport_width: usize,
     mode: Mode,
+    close_after_comment: bool,
     comment_count: usize,
     error: Option<String>,
 }
@@ -86,9 +87,21 @@ impl AnnotationState {
             viewport_height: 1,
             viewport_width: 1,
             mode: Mode::Normal,
+            close_after_comment: false,
             comment_count,
             error: None,
         }
+    }
+
+    pub fn new_inline(snapshot: PaneSnapshot, comment_count: usize) -> Self {
+        let source = snapshot.text.clone();
+        let mut state = Self::new(snapshot, comment_count);
+        state.mode = Mode::Comment {
+            source,
+            editor: NoteEditor::default(),
+        };
+        state.close_after_comment = true;
+        state
     }
 
     pub fn cursor(&self) -> SourcePosition {
@@ -109,6 +122,10 @@ impl AnnotationState {
 
     pub fn is_commenting(&self) -> bool {
         matches!(self.mode, Mode::Comment { .. })
+    }
+
+    fn exits_after_save(&self) -> bool {
+        self.close_after_comment
     }
 
     pub fn set_viewport(&mut self, height: usize, width: usize) {
@@ -219,6 +236,9 @@ impl AnnotationState {
         };
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
+                if self.close_after_comment {
+                    return InputOutcome::Exit;
+                }
                 self.mode = Mode::Normal;
                 InputOutcome::Continue
             }
@@ -493,10 +513,22 @@ impl NoteEditor {
 }
 
 pub fn run_annotation(store: &Store, run_id: &str) -> Result<()> {
+    run_annotation_mode(store, run_id, false)
+}
+
+pub fn run_inline_annotation(store: &Store, run_id: &str) -> Result<()> {
+    run_annotation_mode(store, run_id, true)
+}
+
+fn run_annotation_mode(store: &Store, run_id: &str, inline: bool) -> Result<()> {
     let run = store.load_annotation(run_id)?;
     let count = store.list_comments(&run.scope)?.len();
     let mut session = TerminalSession::start()?;
-    let mut state = AnnotationState::new(run.snapshot.clone(), count);
+    let mut state = if inline {
+        AnnotationState::new_inline(run.snapshot.clone(), count)
+    } else {
+        AnnotationState::new(run.snapshot.clone(), count)
+    };
 
     loop {
         session.terminal.draw(|frame| render(frame, &mut state))?;
@@ -505,6 +537,10 @@ pub fn run_annotation(store: &Store, run_id: &str) -> Result<()> {
                 InputOutcome::Continue => {}
                 InputOutcome::SaveComment { source, note } => {
                     match store.add_comment(&run.scope, &source, &note) {
+                        Ok(_) if state.exits_after_save() => {
+                            store.delete_annotation(&run.id)?;
+                            return Ok(());
+                        }
                         Ok(_) => state.comment_saved(store.list_comments(&run.scope)?.len()),
                         Err(error) => state.set_error(error.to_string()),
                     }
@@ -818,6 +854,41 @@ mod tests {
                 note: "first line\nsecond line".into(),
             }
         );
+    }
+
+    #[test]
+    fn inline_comment_starts_in_the_editor_and_closes_after_save_or_cancel() {
+        let mut saved = AnnotationState::new_inline(snapshot(), 2);
+
+        assert!(saved.is_commenting());
+        saved.handle_paste("direct note");
+        assert_eq!(
+            saved.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            InputOutcome::SaveComment {
+                source: "alpha\nbeta value\ngamma".into(),
+                note: "direct note".into(),
+            }
+        );
+        assert!(saved.exits_after_save());
+
+        let mut cancelled = AnnotationState::new_inline(snapshot(), 2);
+        assert_eq!(
+            cancelled.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
+            InputOutcome::Exit
+        );
+    }
+
+    #[test]
+    fn snapshot_comment_escape_returns_to_the_snapshot() {
+        let mut state = AnnotationState::new(snapshot(), 0);
+        state.handle_key(key(KeyCode::Char('V'), KeyModifiers::SHIFT));
+        state.handle_key(key(KeyCode::Char('c'), KeyModifiers::NONE));
+
+        assert_eq!(
+            state.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
+            InputOutcome::Continue
+        );
+        assert!(!state.is_commenting());
     }
 
     #[test]
