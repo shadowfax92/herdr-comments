@@ -12,10 +12,10 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Text};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use crate::model::PaneSnapshot;
 use crate::snapshot::rows;
@@ -25,6 +25,13 @@ use crate::store::Store;
 pub struct SourcePosition {
     pub row: usize,
     pub column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WrappedRow {
+    source_row: usize,
+    start_column: usize,
+    end_column: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +66,6 @@ pub struct AnnotationState {
     lines: Vec<String>,
     cursor: SourcePosition,
     top: usize,
-    horizontal: usize,
     viewport_height: usize,
     viewport_width: usize,
     mode: Mode,
@@ -83,9 +89,8 @@ impl AnnotationState {
                 column: 0,
             },
             top,
-            horizontal: 0,
             viewport_height: 1,
-            viewport_width: 1,
+            viewport_width: 0,
             mode: Mode::Normal,
             close_after_comment: false,
             comment_count,
@@ -130,7 +135,25 @@ impl AnnotationState {
 
     pub fn set_viewport(&mut self, height: usize, width: usize) {
         self.viewport_height = height.max(1);
-        self.viewport_width = width.max(1);
+        let width = width.max(1);
+        if self.viewport_width != width {
+            let top = if self.viewport_width == 0 {
+                SourcePosition {
+                    row: self.top,
+                    column: 0,
+                }
+            } else {
+                wrapped_rows(&self.lines, self.viewport_width)
+                    .get(self.top)
+                    .map(|row| SourcePosition {
+                        row: row.source_row,
+                        column: row.start_column,
+                    })
+                    .unwrap_or(SourcePosition { row: 0, column: 0 })
+            };
+            self.viewport_width = width;
+            self.top = wrapped_row_index(&wrapped_rows(&self.lines, width), top).unwrap_or(0);
+        }
         self.ensure_cursor_visible();
     }
 
@@ -343,22 +366,19 @@ impl AnnotationState {
     }
 
     fn ensure_cursor_visible(&mut self) {
-        if self.cursor.row < self.top {
-            self.top = self.cursor.row;
-        } else if self.cursor.row >= self.top.saturating_add(self.viewport_height) {
-            self.top = self
-                .cursor
-                .row
+        if self.viewport_width == 0 {
+            return;
+        }
+        let rows = wrapped_rows(&self.lines, self.viewport_width);
+        let Some(cursor_row) = wrapped_row_index(&rows, self.cursor) else {
+            return;
+        };
+        if cursor_row < self.top {
+            self.top = cursor_row;
+        } else if cursor_row >= self.top.saturating_add(self.viewport_height) {
+            self.top = cursor_row
                 .saturating_add(1)
                 .saturating_sub(self.viewport_height);
-        }
-        let cursor_column = display_column(&self.lines[self.cursor.row], self.cursor.column);
-        if cursor_column < self.horizontal {
-            self.horizontal = cursor_column;
-        } else if cursor_column >= self.horizontal.saturating_add(self.viewport_width) {
-            self.horizontal = cursor_column
-                .saturating_add(1)
-                .saturating_sub(self.viewport_width);
         }
     }
 
@@ -578,18 +598,26 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
         .as_bytes()
         .into_text()
         .unwrap_or_else(|_| Text::raw(state.snapshot.text.clone()));
-    let visible = styled
-        .lines
-        .into_iter()
+    let rows = wrapped_rows(&state.lines, state.viewport_width);
+    let visible = rows
+        .iter()
         .skip(state.top)
         .take(usize::from(source_area.height))
+        .map(|row| {
+            styled.lines.get(row.source_row).map_or_else(
+                || {
+                    Line::raw(char_slice(
+                        &state.lines[row.source_row],
+                        row.start_column,
+                        row.end_column,
+                    ))
+                },
+                |line| styled_line_slice(line, row.start_column, row.end_column),
+            )
+        })
         .collect::<Vec<_>>();
-    frame.render_widget(
-        Paragraph::new(Text::from(visible))
-            .scroll((0, u16::try_from(state.horizontal).unwrap_or(u16::MAX))),
-        source_area,
-    );
-    render_selection(frame, source_area, state);
+    frame.render_widget(Paragraph::new(Text::from(visible)), source_area);
+    render_selection(frame, source_area, state, &rows);
 
     let mode = if matches!(state.mode, Mode::Visual { .. }) {
         "VISUAL"
@@ -633,14 +661,16 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
         footer_area,
     );
 
-    let line = &state.lines[state.cursor.row];
-    let cursor_column = display_column(line, state.cursor.column);
-    if cursor_column >= state.horizontal {
+    if let Some(cursor_row) = wrapped_row_index(&rows, state.cursor) {
+        let row = rows[cursor_row];
+        let line = &state.lines[state.cursor.row];
+        let cursor_column = display_column(line, state.cursor.column)
+            .saturating_sub(display_column(line, row.start_column));
         let x = source_area
             .x
-            .saturating_add(u16::try_from(cursor_column - state.horizontal).unwrap_or(u16::MAX));
+            .saturating_add(u16::try_from(cursor_column).unwrap_or(u16::MAX));
         let y = source_area.y.saturating_add(
-            u16::try_from(state.cursor.row.saturating_sub(state.top)).unwrap_or(u16::MAX),
+            u16::try_from(cursor_row.saturating_sub(state.top)).unwrap_or(u16::MAX),
         );
         if x < source_area.right() && y < source_area.bottom() {
             frame.set_cursor_position((x, y));
@@ -648,31 +678,46 @@ fn render_source(frame: &mut Frame<'_>, state: &mut AnnotationState) {
     }
 }
 
-fn render_selection(frame: &mut Frame<'_>, area: Rect, state: &AnnotationState) {
+fn render_selection(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AnnotationState,
+    rows: &[WrappedRow],
+) {
     let style = Style::default()
         .fg(Color::Black)
         .bg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
     let buffer = frame.buffer_mut();
-    for row in state.top..state.top.saturating_add(usize::from(area.height)) {
-        let Some((from, to)) = state.selected_columns(row) else {
+    for (screen_row, row) in rows
+        .iter()
+        .skip(state.top)
+        .take(usize::from(area.height))
+        .enumerate()
+    {
+        let Some((from, to)) = state.selected_columns(row.source_row) else {
             continue;
         };
-        let Some(line) = state.lines.get(row) else {
+        let Some(line) = state.lines.get(row.source_row) else {
             continue;
         };
-        let start = display_column(line, from);
-        let end = display_column(line, to).max(start.saturating_add(1));
+        let from = from.max(row.start_column);
+        let to = to.min(row.end_column);
+        if from >= to && row.start_column != row.end_column {
+            continue;
+        }
+        let row_start = display_column(line, row.start_column);
+        let start = display_column(line, from).saturating_sub(row_start);
+        let end = display_column(line, to)
+            .saturating_sub(row_start)
+            .max(start.saturating_add(1));
         for column in start..end {
-            if column < state.horizontal {
-                continue;
-            }
             let x = area
                 .x
-                .saturating_add(u16::try_from(column - state.horizontal).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
             let y = area
                 .y
-                .saturating_add(u16::try_from(row.saturating_sub(state.top)).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
             if x < area.right() && y < area.bottom() {
                 buffer[(x, y)].set_style(style);
             }
@@ -712,32 +757,48 @@ fn render_comment(frame: &mut Frame<'_>, state: &AnnotationState) {
     let inner = block.inner(note_area);
     frame.render_widget(block, note_area);
     let visible_rows = usize::from(inner.height).max(1);
-    let top = editor.row.saturating_sub(visible_rows.saturating_sub(1));
-    let text = editor
-        .lines
+    let rows = wrapped_editor_rows(&editor.lines, usize::from(inner.width));
+    let cursor = SourcePosition {
+        row: editor.row,
+        column: editor.column,
+    };
+    let cursor_row = wrapped_row_index(&rows, cursor)
+        .or_else(|| rows.iter().rposition(|row| row.source_row == editor.row))
+        .unwrap_or(0);
+    let top = cursor_row.saturating_sub(visible_rows.saturating_sub(1));
+    let text = rows
         .iter()
         .skip(top)
         .take(visible_rows)
-        .cloned()
-        .map(Line::from)
+        .map(|row| {
+            Line::from(char_slice(
+                &editor.lines[row.source_row],
+                row.start_column,
+                row.end_column,
+            ))
+        })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(text), inner);
 
-    let cursor_width =
-        UnicodeWidthStr::width(char_slice(&editor.lines[editor.row], 0, editor.column).as_str());
+    let row = rows[cursor_row];
+    let cursor_width = display_column(&editor.lines[editor.row], editor.column)
+        .saturating_sub(display_column(&editor.lines[editor.row], row.start_column));
     let x = inner
         .x
         .saturating_add(u16::try_from(cursor_width).unwrap_or(u16::MAX));
     let y = inner
         .y
-        .saturating_add(u16::try_from(editor.row.saturating_sub(top)).unwrap_or(u16::MAX));
+        .saturating_add(u16::try_from(cursor_row.saturating_sub(top)).unwrap_or(u16::MAX));
     if x < inner.right() && y < inner.bottom() {
         frame.set_cursor_position((x, y));
     }
 
-    let message = state
-        .error()
-        .unwrap_or(" enter collect · alt-enter newline · esc cancel ");
+    let help = if state.exits_after_save() {
+        " type comment · enter collect & close · alt-enter newline · esc cancel & close "
+    } else {
+        " type comment · enter collect · alt-enter newline · esc back to NORMAL "
+    };
+    let message = state.error().unwrap_or(help);
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(format!(" COMMENT · {} collected ", state.comment_count)).style(
@@ -782,6 +843,95 @@ fn display_column(text: &str, column: usize) -> usize {
         .take(column)
         .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
         .sum()
+}
+
+fn wrapped_rows(lines: &[String], width: usize) -> Vec<WrappedRow> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for (source_row, line) in lines.iter().enumerate() {
+        let mut start_column = 0;
+        let mut row_width = 0usize;
+        let mut end_column = 0;
+        for (column, ch) in line.chars().enumerate() {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if row_width > 0 && row_width.saturating_add(char_width) > width {
+                rows.push(WrappedRow {
+                    source_row,
+                    start_column,
+                    end_column: column,
+                });
+                start_column = column;
+                row_width = 0;
+            }
+            row_width = row_width.saturating_add(char_width);
+            end_column = column + 1;
+        }
+        rows.push(WrappedRow {
+            source_row,
+            start_column,
+            end_column,
+        });
+    }
+    rows
+}
+
+fn wrapped_row_index(rows: &[WrappedRow], position: SourcePosition) -> Option<usize> {
+    rows.iter().position(|row| {
+        row.source_row == position.row
+            && (row.start_column == row.end_column && position.column == row.start_column
+                || row.start_column <= position.column && position.column < row.end_column)
+    })
+}
+
+fn wrapped_editor_rows(lines: &[String], width: usize) -> Vec<WrappedRow> {
+    let width = width.max(1);
+    let mut rows = wrapped_rows(lines, width);
+    for (source_row, line) in lines.iter().enumerate().rev() {
+        let Some(last) = rows.iter().rposition(|row| row.source_row == source_row) else {
+            continue;
+        };
+        let row = rows[last];
+        let row_width = display_column(line, row.end_column)
+            .saturating_sub(display_column(line, row.start_column));
+        if row_width >= width {
+            rows.insert(
+                last + 1,
+                WrappedRow {
+                    source_row,
+                    start_column: row.end_column,
+                    end_column: row.end_column,
+                },
+            );
+        }
+    }
+    rows
+}
+
+fn styled_line_slice(line: &Line<'_>, from: usize, to: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut span_start = 0;
+    for span in &line.spans {
+        let span_len = span.content.chars().count();
+        let span_end = span_start + span_len;
+        let overlap_start = from.max(span_start);
+        let overlap_end = to.min(span_end);
+        if overlap_start < overlap_end {
+            spans.push(Span::styled(
+                char_slice(
+                    span.content.as_ref(),
+                    overlap_start - span_start,
+                    overlap_end - span_start,
+                ),
+                span.style,
+            ));
+        }
+        span_start = span_end;
+    }
+    Line {
+        style: line.style,
+        alignment: line.alignment,
+        spans,
+    }
 }
 
 struct TerminalSession {
@@ -879,6 +1029,34 @@ mod tests {
     }
 
     #[test]
+    fn comment_editor_wraps_typed_text_and_keeps_cursor_visible() {
+        let mut state = AnnotationState::new_inline(snapshot(), 0);
+        state.handle_paste("abcdefghij");
+        let area = Rect::new(0, 0, 10, 12);
+        let [_, note_area, _] = Layout::vertical([
+            Constraint::Percentage(35),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+        let inner = Block::default().borders(Borders::ALL).inner(note_area);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut state)).unwrap();
+
+        let backend = terminal.backend();
+        let row = |y| {
+            (inner.x..inner.right())
+                .map(|x| backend.buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(row(inner.y), "abcdefgh");
+        assert_eq!(row(inner.y + 1), "ij      ");
+        assert!(backend.cursor_visible());
+        assert_eq!(backend.cursor_position(), (inner.x + 2, inner.y + 1).into());
+    }
+
+    #[test]
     fn snapshot_comment_escape_returns_to_the_snapshot() {
         let mut state = AnnotationState::new(snapshot(), 0);
         state.handle_key(key(KeyCode::Char('V'), KeyModifiers::SHIFT));
@@ -889,6 +1067,35 @@ mod tests {
             InputOutcome::Continue
         );
         assert!(!state.is_commenting());
+    }
+
+    #[test]
+    fn comment_help_matches_inline_and_snapshot_exit_behavior() {
+        let render_content = |mut state| {
+            let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+            terminal.draw(|frame| render(frame, &mut state)).unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let inline = render_content(AnnotationState::new_inline(snapshot(), 0));
+        assert!(inline.contains("type comment"));
+        assert!(inline.contains("enter collect & close"));
+        assert!(inline.contains("esc cancel & close"));
+
+        let mut snapshot = AnnotationState::new(snapshot(), 0);
+        snapshot.handle_key(key(KeyCode::Char('V'), KeyModifiers::SHIFT));
+        snapshot.handle_key(key(KeyCode::Char('c'), KeyModifiers::NONE));
+        let snapshot = render_content(snapshot);
+        assert!(snapshot.contains("enter collect"));
+        assert!(snapshot.contains("esc back to NORMAL"));
     }
 
     #[test]
@@ -943,5 +1150,38 @@ mod tests {
         assert!(content.contains("v/V select"));
         assert!(content.contains("alt-shift-c final edit"));
         assert!(content.contains("alt-shift-p paste"));
+    }
+
+    #[test]
+    fn wrapped_source_keeps_cursor_and_visual_selection_aligned() {
+        let snapshot = PaneSnapshot {
+            text: "abcdefghij".into(),
+            ansi: "\u{1b}[31mabcdefghij\u{1b}[0m".into(),
+            initial_top: 0,
+            viewport_rows: 1,
+            history_limited: false,
+        };
+        let mut state = AnnotationState::new(snapshot, 0);
+        state.handle_key(key(KeyCode::Char('$'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('v'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE));
+        state.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(5, 7)).unwrap();
+
+        terminal.draw(|frame| render(frame, &mut state)).unwrap();
+
+        let backend = terminal.backend();
+        let row = |y| {
+            (0..backend.buffer().area.width)
+                .map(|x| backend.buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(row(0), "abcde");
+        assert_eq!(row(1), "fghij");
+        assert_eq!(backend.cursor_position(), (2, 1).into());
+        assert_eq!(backend.buffer()[(0, 0)].fg, Color::Red);
+        assert_eq!(backend.buffer()[(0, 1)].fg, Color::Red);
+        assert_eq!(backend.buffer()[(2, 1)].bg, Color::Yellow);
+        assert_eq!(backend.buffer()[(4, 1)].bg, Color::Yellow);
     }
 }

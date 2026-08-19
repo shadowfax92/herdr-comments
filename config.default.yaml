@@ -1,4 +1,4 @@
-inline_comments: false
+inline_comments: true
 
 popups:
   capture: { width: "90%", height: "90%" }
@@ -20,5 +20,5 @@ profiles:
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
-      capture: { width: "70%", height: "90%" }
+      capture: { width: "50%", height: "70%" }
       review: { width: "70%", height: "85%" }

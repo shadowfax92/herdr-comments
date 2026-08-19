@@ -15,6 +15,7 @@
 Herdr Comments turns passages from a terminal pane into quote-first Markdown for an agent prompt. The capture phase stays inside a fast Rust interface; Neovim opens only when the complete collection is ready for review.
 
 - **Frozen terminal history** — browse a stable snapshot while the source pane continues running.
+- **Wrapped capture text** — snapshot lines, selections, and typed comments stay aligned in narrow popups.
 - **Copy-mode navigation** — scroll and select with familiar vi keys.
 - **Multiline comments** — attach a full note to each selected passage.
 - **Per-pane collections** — every source pane and Herdr session has an isolated draft.
@@ -68,6 +69,8 @@ herdr plugin config-dir shadowfax.comments
 Popup profiles follow the same client-width model as Herdr Scratch. Profiles are checked in order; the first match wins.
 
 ```yaml
+inline_comments: true
+
 popups:
   capture: { width: "90%", height: "90%" }
   review: { width: "90%", height: "85%" }
@@ -88,7 +91,7 @@ profiles:
   - name: full-ultrawide
     match: { min_client_width: 400 }
     popups:
-      capture: { width: "70%", height: "90%" }
+      capture: { width: "50%", height: "70%" }
       review: { width: "70%", height: "85%" }
 ```
 
@@ -96,9 +99,13 @@ Widths from 351 through 399 cells use the 90% default. Changes are read on every
 
 ## Workflow
 
-Press `Alt-c` in a pane. Herdr Comments captures its rendered history and opens a centered native popup at the size selected by the active profile. The source remains visible around its edges.
+By default, select text in Herdr Copy mode and press `Alt-c`. Herdr Comments opens the selected text above a wrapped comment editor. `Enter` collects the comment and closes the popup; `Esc` cancels and closes it.
+
+Set `inline_comments: false` to make `Alt-c` capture rendered pane history and open the snapshot browser instead.
 
 ### Browse and select
+
+The snapshot browser wraps long lines while keeping its cursor and visual selections aligned.
 
 | Key | Result |
 | --- | --- |
@@ -120,7 +127,7 @@ After `c`, the selected passage remains visible above a multiline Rust editor.
 | --- | --- |
 | `Enter` | Collect the comment and return to the snapshot |
 | `Alt-Enter` | Insert a newline |
-| `Esc` | Discard this comment |
+| `Esc` | Return to the snapshot, or cancel and close an inline comment |
 
 Repeat selection and capture as many times as needed. Each saved entry is persisted immediately.
 

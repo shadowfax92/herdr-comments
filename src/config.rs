@@ -191,28 +191,30 @@ mod tests {
     }
 
     #[test]
-    fn inline_comments_are_opt_in_and_legacy_configs_stay_disabled() {
-        assert!(!config().inline_comments);
+    fn inline_comments_are_enabled_by_default_and_legacy_configs_stay_disabled() {
+        assert!(config().inline_comments);
 
-        let legacy = DEFAULT_CONFIG.replacen("inline_comments: false\n\n", "", 1);
+        let legacy = DEFAULT_CONFIG.replacen("inline_comments: true\n\n", "", 1);
         assert!(!Config::parse(&legacy).unwrap().inline_comments);
 
-        let enabled = DEFAULT_CONFIG.replacen("inline_comments: false", "inline_comments: true", 1);
-        assert!(Config::parse(&enabled).unwrap().inline_comments);
+        let disabled =
+            DEFAULT_CONFIG.replacen("inline_comments: true", "inline_comments: false", 1);
+        assert!(!Config::parse(&disabled).unwrap().inline_comments);
     }
 
     #[test]
-    fn selects_responsive_widths_and_preserves_popup_heights() {
+    fn selects_responsive_popup_sizes() {
         let config = config();
 
         assert_eq!(config.popup(CAPTURE_POPUP, Some(300)).unwrap().width, "95%");
         assert_eq!(config.popup(CAPTURE_POPUP, Some(330)).unwrap().width, "90%");
         assert_eq!(config.popup(CAPTURE_POPUP, Some(380)).unwrap().width, "90%");
-        assert_eq!(config.popup(CAPTURE_POPUP, Some(512)).unwrap().width, "70%");
+        assert_eq!(config.popup(CAPTURE_POPUP, Some(512)).unwrap().width, "50%");
         assert_eq!(
             config.popup(CAPTURE_POPUP, Some(512)).unwrap().height,
-            "90%"
+            "70%"
         );
+        assert_eq!(config.popup(REVIEW_POPUP, Some(512)).unwrap().width, "70%");
         assert_eq!(config.popup(REVIEW_POPUP, Some(512)).unwrap().height, "85%");
     }
 
