@@ -3,7 +3,7 @@ name = "Herdr Comments"
 version = "0.1.0"
 description = "Select and comment on frozen pane history, then review in Neovim."
 min_herdr_version = "0.7.5"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 
 [[build]]
 command = ["cargo", "build", "--release"]

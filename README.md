@@ -26,7 +26,9 @@ Herdr Comments turns passages from a terminal pane into quote-first Markdown for
 
 ## Install
 
-Requires macOS, [Herdr](https://herdr.dev) 0.7.5 or newer, a Rust toolchain, and Neovim.
+Requires macOS or Linux (including WSL), [Herdr](https://herdr.dev) 0.7.5 or newer, a Rust toolchain, and Neovim.
+
+On Windows, run Herdr and this plugin inside WSL. Native Windows is not supported.
 
 ```sh
 herdr plugin install shadowfax92/herdr-comments
