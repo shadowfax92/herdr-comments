@@ -208,7 +208,9 @@ fn manifest_declares_the_public_contract() {
 
     assert!(manifest.contains("id = \"shadowfax.comments\""));
     assert!(manifest.contains("min_herdr_version = \"0.7.5\""));
-    assert!(manifest.contains("platforms = [\"macos\"]"));
+    assert!(manifest
+        .lines()
+        .any(|line| line == "platforms = [\"macos\", \"linux\"]"));
     assert!(manifest.contains("id = \"capture\""));
     assert!(manifest.contains("contexts = [\"pane\", \"selection\"]"));
     assert!(manifest.contains("id = \"review\""));
